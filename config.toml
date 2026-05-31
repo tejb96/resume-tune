@@ -1,0 +1,8 @@
+endpoint_url = "http://localhost:11434/v1"
+model_name = "llama3.2"
+output_dir = "./output"
+background_file = "./background.md"
+
+[models]
+ollama = ["llama3.2", "mistral", "qwen2.5"]
+lemonade = ["default"]
