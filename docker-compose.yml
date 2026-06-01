@@ -1,0 +1,46 @@
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: resume-tune-ollama
+    volumes:
+      - ollama_data:/root/.ollama
+    ports:
+      - "11434:11434"
+    restart: unless-stopped
+
+  ollama-init:
+    image: ollama/ollama:latest
+    container_name: resume-tune-ollama-init
+    depends_on:
+      ollama:
+        condition: service_started
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        echo "Waiting for Ollama API..."
+        until OLLAMA_HOST=http://ollama:11434 ollama list >/dev/null 2>&1; do
+          sleep 2
+        done
+        echo "Pulling tinyllama (~637 MB, smallest practical test model)..."
+        OLLAMA_HOST=http://ollama:11434 ollama pull tinyllama
+        echo "Model ready."
+    restart: "no"
+
+  app:
+    build: .
+    container_name: resume-tune-app
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./background.md:/app/background.md:ro
+      - ./config.docker.toml:/app/config.toml:ro
+      - ./output:/app/output
+    depends_on:
+      ollama-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+volumes:
+  ollama_data:

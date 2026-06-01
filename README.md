@@ -22,6 +22,21 @@ Edit `config.toml` for your endpoint, model name, and paths. Edit `background.md
 uv run streamlit run app.py
 ```
 
+## Docker (app + Ollama)
+
+Starts Streamlit and Ollama, pulls `tinyllama` (smallest practical test model) on first run:
+
+```bash
+docker compose up --build
+```
+
+- App: http://localhost:8501
+- Ollama API: http://localhost:11434
+
+`config.docker.toml` is mounted into the app container (endpoint `http://ollama:11434/v1`). Edit `background.md` locally — it is bind-mounted read-only. Generated DOCX files land in `./output`.
+
+First startup may take a few minutes while the model downloads.
+
 ## Dev checks
 
 ```bash

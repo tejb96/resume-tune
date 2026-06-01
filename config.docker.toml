@@ -1,0 +1,8 @@
+endpoint_url = "http://ollama:11434/v1"
+model_name = "tinyllama"
+output_dir = "./output"
+background_file = "./background.md"
+
+[models]
+ollama = ["tinyllama"]
+lemonade = ["default"]
