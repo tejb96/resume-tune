@@ -3,7 +3,7 @@ services:
     build: .
     container_name: resume-tune-app
     ports:
-      - "8501:8501"
+      - "127.0.0.1:8501:8501"
     env_file:
       - .env
     extra_hosts:
