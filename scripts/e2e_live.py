@@ -6,7 +6,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from ai import generate_tailored_content
+from ai import DEFAULT_AI_OUTPUT_MAX_CHARS, generate_tailored_content
 from resume import build_resume, load_background, save_resume_to_disk
 from settings import load_settings
 
@@ -41,6 +41,9 @@ def main() -> None:
             endpoint_url=endpoint,
             model_name=model,
             api_key=api_key,
+            ai_output_max_chars=config.get(
+                "ai_output_max_chars", DEFAULT_AI_OUTPUT_MAX_CHARS
+            ),
         )
     except Exception as exc:
         print(f"SKIP live e2e: {exc}")

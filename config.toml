@@ -1,10 +1,12 @@
-# Override endpoint, API key, and default model via .env (OPENAI_BASE_URL, OPENAI_API_KEY, OPENAI_MODEL).
+# Override via .env: OPENAI_BASE_URL, OPENAI_API_KEY, OPENAI_MODEL, AI_OUTPUT_MAX_CHARS.
 endpoint_url = ""
 api_key = "lemonade"
-model_name = "default"
+model_name = "llama3.1:8b"
 output_dir = "./output"
 background_file = "./background.md"
+# Max combined characters for AI summary + skill labels (fits page 2 of the DOCX layout).
+ai_output_max_chars = 967
 
 [models]
 ollama = ["llama3.2", "mistral", "qwen2.5"]
-lemonade = ["default"]
+lemonade = ["llama3.1:8b", "default"]

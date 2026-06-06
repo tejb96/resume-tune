@@ -7,7 +7,7 @@ from pathlib import Path
 import streamlit as st
 import yaml
 
-from ai import AIResponseError, generate_tailored_content
+from ai import AIResponseError, DEFAULT_AI_OUTPUT_MAX_CHARS, generate_tailored_content
 from resume import build_resume, format_skill_groups, load_background, save_resume_to_disk
 from settings import ROOT, load_settings
 
@@ -93,6 +93,9 @@ if generate:
                     endpoint_url=endpoint_url,
                     model_name=selected_model,
                     api_key=api_key,
+                    ai_output_max_chars=config.get(
+                        "ai_output_max_chars", DEFAULT_AI_OUTPUT_MAX_CHARS
+                    ),
                 )
                 docx_bytes = build_resume(background_data, ai_output)
                 saved_path = None

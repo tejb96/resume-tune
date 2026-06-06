@@ -46,8 +46,9 @@ docker compose up --build
 | `OPENAI_BASE_URL` | OpenAI-compatible API base URL (required) |
 | `OPENAI_API_KEY` | API key (`lemonade` for Lemonade; `ollama` for Ollama) |
 | `OPENAI_MODEL` | Model name to use |
+| `AI_OUTPUT_MAX_CHARS` | Max combined characters for tailored summary + skill labels (default `967`) |
 
-`config.toml` supplies paths and model presets when env vars are not set.
+`config.toml` supplies paths, model presets, and `ai_output_max_chars` when env vars are not set.
 
 ## Dev checks
 
