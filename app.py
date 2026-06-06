@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import tomllib
 from pathlib import Path
 
 import streamlit as st
@@ -10,15 +9,12 @@ import yaml
 
 from ai import AIResponseError, generate_tailored_content
 from resume import build_resume, load_background, save_resume_to_disk
-
-ROOT = Path(__file__).resolve().parent
-CONFIG_PATH = ROOT / "config.toml"
+from settings import ROOT, load_settings
 
 
 @st.cache_data
 def load_config() -> dict:
-    with CONFIG_PATH.open("rb") as f:
-        return tomllib.load(f)
+    return load_settings()
 
 
 def model_options(config: dict) -> list[str]:
@@ -32,11 +28,14 @@ def model_options(config: dict) -> list[str]:
 config = load_config()
 background_path = (ROOT / config.get("background_file", "./background.md")).resolve()
 output_dir = (ROOT / config.get("output_dir", "./output")).resolve()
-endpoint_url = config.get("endpoint_url", "http://localhost:11434/v1")
-default_model = config.get("model_name", "llama3.2")
+endpoint_url = config.get("endpoint_url", "")
+api_key = config.get("api_key", "ollama")
+default_model = config.get("model_name", "")
 models = model_options(config)
-if default_model not in models:
+if default_model and default_model not in models:
     models = [default_model, *models]
+elif not models and default_model:
+    models = [default_model]
 
 st.set_page_config(page_title="Resume Tailor", layout="wide")
 st.title("Resume Tailor")
@@ -59,10 +58,17 @@ with st.sidebar:
     )
     model_index = models.index(default_model) if default_model in models else 0
     selected_model = st.selectbox("Model", models, index=model_index)
-    st.text_input("API endpoint", value=endpoint_url, disabled=True)
+    st.text_input("API endpoint", value=endpoint_url or "(set OPENAI_BASE_URL in .env)", disabled=True)
     generate = st.button("Generate resume", type="primary", use_container_width=True)
 
 if not background_ok:
+    st.stop()
+
+if not endpoint_url:
+    st.error(
+        "Set OPENAI_BASE_URL in a `.env` file (copy from `.env.example`) "
+        "or `endpoint_url` in config.toml."
+    )
     st.stop()
 
 if "result" not in st.session_state:
@@ -79,6 +85,7 @@ if generate:
                     background_path,
                     endpoint_url=endpoint_url,
                     model_name=selected_model,
+                    api_key=api_key,
                 )
                 docx_bytes = build_resume(background_data, ai_output)
                 saved_path = None

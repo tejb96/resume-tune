@@ -5,7 +5,7 @@ WORKDIR /app
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev
 
-COPY app.py ai.py resume.py background.md ./
+COPY app.py ai.py resume.py settings.py background.md config.toml ./
 
 RUN mkdir -p output
 

@@ -122,7 +122,7 @@ def generate_tailored_content(
         except APIConnectionError as exc:
             raise AIResponseError(
                 f"Cannot connect to local model API at {endpoint_url}. "
-                "Is Ollama or Lemonade running?"
+                "Is your local OpenAI-compatible API running?"
             ) from exc
         except APIStatusError as exc:
             raise AIResponseError(f"Model API error ({exc.status_code}): {exc.message}") from exc

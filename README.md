@@ -1,20 +1,21 @@
 # Resume Tune
 
-Local desktop-style resume generator: paste a job description, tailor summary and skills with a local LLM (Ollama or Lemonade), and download a formatted DOCX.
+Local desktop-style resume generator: paste a job description, tailor summary and skills with a local OpenAI-compatible LLM (Lemonade, Ollama, etc.), and download a formatted DOCX.
 
 ## Requirements
 
 - Python 3.13+
 - [uv](https://docs.astral.sh/uv/)
-- A running OpenAI-compatible local API (e.g. [Ollama](https://ollama.com/) at `http://localhost:11434/v1`)
+- A running OpenAI-compatible local API (e.g. [Lemonade](https://lemonade-server.ai/) or [Ollama](https://ollama.com/))
 
 ## Setup
 
 ```bash
 uv sync
+cp .env.example .env
 ```
 
-Edit `config.toml` for your endpoint, model name, and paths. Edit `background.md` with your resume data (YAML frontmatter + career context body).
+Edit `.env` with your API endpoint, key, and model. For Lemonade, check your port with `lemonade status` and use `http://localhost:<port>/api/v1`. Edit `background.md` with your resume data (YAML frontmatter + career context body).
 
 ## Run
 
@@ -22,26 +23,36 @@ Edit `config.toml` for your endpoint, model name, and paths. Edit `background.md
 uv run streamlit run app.py
 ```
 
-## Docker (app + Ollama)
+## Docker (app only)
 
-Starts Streamlit and Ollama, pulls `tinyllama` (smallest practical test model) on first run:
+Runs Streamlit only; point it at an LLM server on the host (or elsewhere) via `.env`:
 
 ```bash
+cp .env.example .env
+# For Docker → host Lemonade/Ollama, set e.g.:
+# OPENAI_BASE_URL=http://host.docker.internal:<port>/api/v1
+
 docker compose up --build
 ```
 
 - App: http://localhost:8501
-- Ollama API: http://localhost:11434
+- `background.md` is bind-mounted read-only; generated DOCX files land in `./output`
 
-`config.docker.toml` is mounted into the app container (endpoint `http://ollama:11434/v1`). Edit `background.md` locally — it is bind-mounted read-only. Generated DOCX files land in `./output`.
+## Environment variables
 
-First startup may take a few minutes while the model downloads.
+| Variable | Description |
+|----------|-------------|
+| `OPENAI_BASE_URL` | OpenAI-compatible API base URL (required) |
+| `OPENAI_API_KEY` | API key (`lemonade` for Lemonade; `ollama` for Ollama) |
+| `OPENAI_MODEL` | Model name to use |
+
+`config.toml` supplies paths and model presets when env vars are not set.
 
 ## Dev checks
 
 ```bash
 uv run python scripts/smoke_test.py          # DOCX from fixtures (no LLM)
-uv run python scripts/e2e_live.py            # full pipeline if Ollama/Lemonade is up
+uv run python scripts/e2e_live.py            # full pipeline if API is up
 ```
 
 ## Project layout
@@ -50,6 +61,7 @@ uv run python scripts/e2e_live.py            # full pipeline if Ollama/Lemonade 
 |------|------|
 | `app.py` | Streamlit UI |
 | `ai.py` | Local LLM call, JSON parse/validate |
+| `settings.py` | `.env` + `config.toml` loader |
 | `resume.py` | python-docx formatter |
 | `background.md` | Master background (frontmatter + AI context) |
-| `config.toml` | Endpoint, model, paths |
+| `config.toml` | Paths and model presets |

@@ -1,5 +1,7 @@
-endpoint_url = "http://localhost:11434/v1"
-model_name = "llama3.2"
+# Override endpoint, API key, and default model via .env (OPENAI_BASE_URL, OPENAI_API_KEY, OPENAI_MODEL).
+endpoint_url = ""
+api_key = "lemonade"
+model_name = "default"
 output_dir = "./output"
 background_file = "./background.md"
 
