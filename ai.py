@@ -15,7 +15,7 @@ RULES (strict):
 - Output ONLY valid JSON. No markdown code fences. No preamble. No explanation. No trailing text.
 - JSON schema: {{"summary": "<string>", "skills": ["<skill>", ...]}}
 - "summary": 3-5 sentences, third person or implied first person, targeted to the job description. Use only facts from the background.
-- "skills": 12-18 items max, ordered by relevance to the job description. Only include skills evidenced in the background. No invented skills.
+- "skills": 12-18 items max, ordered by relevance to the job description. Only include skills evidenced in the background. No invented skills. Prefer concise labels (1-4 words when possible; standard technology names over sentence-length phrases).
 - Do not include any keys other than "summary" and "skills".
 
 CANDIDATE BACKGROUND:

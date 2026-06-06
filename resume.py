@@ -235,11 +235,18 @@ def _add_header(doc: Document, header: dict[str, Any]) -> None:
             _format_run(links_run, size=Pt(10), color=RGBColor(0x2E, 0x5A, 0x88))
 
 
+def _chunk_skills(skills: list[str], size: int = 4) -> list[list[str]]:
+    return [skills[i : i + size] for i in range(0, len(skills), size)]
+
+
+def format_skill_groups(skills: list[str], size: int = 4) -> list[str]:
+    """Return comma-joined skill groups for preview or DOCX bullets."""
+    return [", ".join(group) for group in _chunk_skills(skills, size)]
+
+
 def _add_skills(doc: Document, skills: list[str]) -> None:
-    p = doc.add_paragraph()
-    p.paragraph_format.space_after = Pt(4)
-    run = p.add_run(", ".join(skills))
-    _format_run(run)
+    for line in format_skill_groups(skills):
+        _add_bullet(doc, line)
 
 
 def _normalize_date(value: str) -> str:

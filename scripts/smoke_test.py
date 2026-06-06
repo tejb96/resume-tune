@@ -10,7 +10,7 @@ from resume import build_resume, load_background
 
 
 def main() -> None:
-    data = load_background(ROOT / "background.md")
+    data = load_background(ROOT / "background.example.md")
     ai_output = {
         "summary": (
             "Software engineer with 5+ years building scalable backend systems and APIs. "

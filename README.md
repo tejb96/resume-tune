@@ -13,9 +13,10 @@ Local desktop-style resume generator: paste a job description, tailor summary an
 ```bash
 uv sync
 cp .env.example .env
+cp background.example.md background.md
 ```
 
-Edit `.env` with your API endpoint, key, and model. For Lemonade, check your port with `lemonade status` and use `http://localhost:<port>/api/v1`. Edit `background.md` with your resume data (YAML frontmatter + career context body).
+Edit `.env` with your API endpoint, key, and model. For Lemonade, check your port with `lemonade status` and use `http://localhost:<port>/api/v1`. Edit `background.md` with your resume data (YAML frontmatter + career context body). `background.example.md` is the public template; `background.md` is your private copy and is gitignored.
 
 ## Run
 
@@ -36,7 +37,7 @@ docker compose up --build
 ```
 
 - App: http://localhost:8501
-- `background.md` is bind-mounted read-only; generated DOCX files land in `./output`
+- Create `background.md` locally (`cp background.example.md background.md`) before starting; it is bind-mounted read-only. Generated DOCX files land in `./output`
 
 ## Environment variables
 
@@ -63,5 +64,6 @@ uv run python scripts/e2e_live.py            # full pipeline if API is up
 | `ai.py` | Local LLM call, JSON parse/validate |
 | `settings.py` | `.env` + `config.toml` loader |
 | `resume.py` | python-docx formatter |
-| `background.md` | Master background (frontmatter + AI context) |
+| `background.example.md` | Public resume template (frontmatter + AI context) |
+| `background.md` | Your private background (gitignored; copy from example) |
 | `config.toml` | Paths and model presets |

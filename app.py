@@ -8,7 +8,7 @@ import streamlit as st
 import yaml
 
 from ai import AIResponseError, generate_tailored_content
-from resume import build_resume, load_background, save_resume_to_disk
+from resume import build_resume, format_skill_groups, load_background, save_resume_to_disk
 from settings import ROOT, load_settings
 
 
@@ -41,13 +41,20 @@ st.set_page_config(page_title="Resume Tailor", layout="wide")
 st.title("Resume Tailor")
 st.caption("Tailor summary and skills from a job description, then download a formatted DOCX.")
 
+example_background_path = ROOT / "background.example.md"
 try:
     background_data = load_background(background_path)
     background_ok = True
 except (ValueError, FileNotFoundError, yaml.YAMLError) as exc:
     background_ok = False
     background_data = None
-    st.error(f"Background file error: {exc}")
+    if isinstance(exc, FileNotFoundError) and example_background_path.exists():
+        st.error(
+            "Background file not found. Copy `background.example.md` to `background.md` "
+            "and add your resume data."
+        )
+    else:
+        st.error(f"Background file error: {exc}")
 
 with st.sidebar:
     st.header("Inputs")
@@ -128,7 +135,7 @@ else:
     st.write(result["summary"])
 
     st.subheader("Skills")
-    st.write(", ".join(result["skills"]))
+    st.markdown("\n".join(f"• {line}" for line in format_skill_groups(result["skills"])))
 
     st.download_button(
         label="Download DOCX",
