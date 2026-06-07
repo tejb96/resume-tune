@@ -10,20 +10,27 @@ from typing import Any
 import frontmatter
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.opc.constants import RELATIONSHIP_TYPE as RT
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 from docx.shared import Inches, Pt, RGBColor
 
 FONT_NAME = "Calibri"
-FONT_BODY = Pt(10.5)
-FONT_NAME_SIZE = Pt(16)
-FONT_TITLE_SIZE = Pt(11)
-FONT_SECTION = Pt(11)
-MARGIN = Inches(0.6)
-SECTION_SPACING_BEFORE = Pt(8)
-SECTION_SPACING_AFTER = Pt(4)
-BULLET_INDENT = Inches(0.25)
-BULLET_HANGING = Inches(0.18)
+FONT_BODY = Pt(10)
+FONT_NAME_SIZE = Pt(17)
+FONT_TITLE_SIZE = Pt(10.5)
+FONT_SECTION = Pt(10.5)
+MARGIN_TB = Inches(0.55)
+MARGIN_LR = Inches(0.65)
+SECTION_SPACING_BEFORE = Pt(7)
+SECTION_SPACING_AFTER = Pt(3)
+BULLET_INDENT = Inches(0.22)
+BULLET_HANGING = Inches(0.15)
+
+ACCENT_COLOR = RGBColor(0x1A, 0x56, 0x8C)
+RULE_COLOR_HEX = "1A568C"
+META_COLOR = RGBColor(0x55, 0x55, 0x55)
+LINK_COLOR = RGBColor(0x1A, 0x56, 0x8C)
 
 
 def load_background(path: Path) -> dict[str, Any]:
@@ -136,10 +143,10 @@ def build_resume(data: dict[str, Any], ai_output: dict[str, Any]) -> bytes:
 
 def _set_document_margins(doc: Document) -> None:
     for section in doc.sections:
-        section.top_margin = MARGIN
-        section.bottom_margin = MARGIN
-        section.left_margin = MARGIN
-        section.right_margin = MARGIN
+        section.top_margin = MARGIN_TB
+        section.bottom_margin = MARGIN_TB
+        section.left_margin = MARGIN_LR
+        section.right_margin = MARGIN_LR
 
 
 def _set_default_font(doc: Document) -> None:
@@ -163,14 +170,14 @@ def _format_run(run, *, bold: bool = False, size: Pt | None = None, color: RGBCo
         run.font.color.rgb = color
 
 
-def _add_paragraph_border_bottom(paragraph) -> None:
+def _add_paragraph_border_bottom(paragraph, color_hex: str = RULE_COLOR_HEX) -> None:
     p_pr = paragraph._p.get_or_add_pPr()
     p_bdr = OxmlElement("w:pBdr")
     bottom = OxmlElement("w:bottom")
     bottom.set(qn("w:val"), "single")
-    bottom.set(qn("w:sz"), "6")
+    bottom.set(qn("w:sz"), "8")
     bottom.set(qn("w:space"), "1")
-    bottom.set(qn("w:color"), "404040")
+    bottom.set(qn("w:color"), color_hex)
     p_bdr.append(bottom)
     p_pr.append(p_bdr)
 
@@ -180,8 +187,45 @@ def _add_section_heading(doc: Document, title: str) -> None:
     p.paragraph_format.space_before = SECTION_SPACING_BEFORE
     p.paragraph_format.space_after = SECTION_SPACING_AFTER
     run = p.add_run(title.upper())
-    _format_run(run, bold=True, size=FONT_SECTION)
+    _format_run(run, bold=True, size=FONT_SECTION, color=ACCENT_COLOR)
     _add_paragraph_border_bottom(p)
+
+
+def _add_hyperlink(paragraph, url: str, display_text: str) -> None:
+    """Insert a genuine clickable hyperlink run into paragraph."""
+    part = paragraph.part
+    r_id = part.relate_to(url, RT.HYPERLINK, is_external=True)
+
+    hyperlink = OxmlElement("w:hyperlink")
+    hyperlink.set(qn("r:id"), r_id)
+
+    new_run = OxmlElement("w:r")
+    r_pr = OxmlElement("w:rPr")
+
+    u = OxmlElement("w:u")
+    u.set(qn("w:val"), "single")
+    r_pr.append(u)
+
+    color_el = OxmlElement("w:color")
+    color_el.set(qn("w:val"), RULE_COLOR_HEX)
+    r_pr.append(color_el)
+
+    sz = OxmlElement("w:sz")
+    sz.set(qn("w:val"), "20")
+    r_pr.append(sz)
+
+    r_fonts = OxmlElement("w:rFonts")
+    r_fonts.set(qn("w:ascii"), FONT_NAME)
+    r_fonts.set(qn("w:hAnsi"), FONT_NAME)
+    r_pr.append(r_fonts)
+
+    new_run.append(r_pr)
+    t = OxmlElement("w:t")
+    t.text = display_text
+    t.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+    new_run.append(t)
+    hyperlink.append(new_run)
+    paragraph._p.append(hyperlink)
 
 
 def _add_body_paragraph(doc: Document, text: str) -> None:
@@ -217,22 +261,23 @@ def _add_header(doc: Document, header: dict[str, Any]) -> None:
         contact_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
         contact_p.paragraph_format.space_after = Pt(2)
         contact_run = contact_p.add_run(contact_line)
-        _format_run(contact_run, size=Pt(10))
+        _format_run(contact_run, size=Pt(10), color=META_COLOR)
 
     links = header.get("links") or []
     if links:
-        link_labels = []
-        for link in links:
+        links_p = doc.add_paragraph()
+        links_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        links_p.paragraph_format.space_after = Pt(8)
+
+        for i, link in enumerate(links):
             label = link.get("label", "")
             url = link.get("url", "")
-            if label and url:
-                link_labels.append(f"{label}: {url}")
-        if link_labels:
-            links_p = doc.add_paragraph()
-            links_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            links_p.paragraph_format.space_after = Pt(8)
-            links_run = links_p.add_run(" | ".join(link_labels))
-            _format_run(links_run, size=Pt(10), color=RGBColor(0x2E, 0x5A, 0x88))
+            if not (label and url):
+                continue
+            if i > 0:
+                sep_run = links_p.add_run("  |  ")
+                _format_run(sep_run, size=Pt(10), color=META_COLOR)
+            _add_hyperlink(links_p, url, label)
 
 
 def _chunk_skills(skills: list[str], size: int = 4) -> list[list[str]]:
@@ -245,8 +290,50 @@ def format_skill_groups(skills: list[str], size: int = 4) -> list[str]:
 
 
 def _add_skills(doc: Document, skills: list[str]) -> None:
-    for line in format_skill_groups(skills):
-        _add_bullet(doc, line)
+    """Render skills in two columns via tab stops (avoids visible table gridlines)."""
+    if not skills:
+        return
+
+    padded = list(skills)
+    if len(padded) % 2 != 0:
+        padded.append("")
+
+    mid = len(padded) // 2
+    col_a = padded[:mid]
+    col_b = padded[mid:]
+
+    # Center of body text on letter paper: 0.65" margin + 3.6" half-width = 6120 twips
+    col_tab_pos = "6120"
+
+    for a, b in zip(col_a, col_b):
+        p = doc.add_paragraph()
+        p.paragraph_format.space_after = Pt(2)
+        p.paragraph_format.left_indent = Inches(0.05)
+
+        if a and b:
+            p_pr = p._p.get_or_add_pPr()
+            tabs = OxmlElement("w:tabs")
+            tab = OxmlElement("w:tab")
+            tab.set(qn("w:val"), "left")
+            tab.set(qn("w:pos"), col_tab_pos)
+            tabs.append(tab)
+            p_pr.append(tabs)
+
+        if a:
+            bullet_run = p.add_run("▪  ")
+            _format_run(bullet_run, color=ACCENT_COLOR)
+            text_run = p.add_run(a)
+            _format_run(text_run)
+
+        if b:
+            if a:
+                p.add_run("\t")
+            bullet_run = p.add_run("▪  ")
+            _format_run(bullet_run, color=ACCENT_COLOR)
+            text_run = p.add_run(b)
+            _format_run(text_run)
+
+    doc.add_paragraph().paragraph_format.space_after = Pt(2)
 
 
 def _normalize_date(value: str) -> str:
@@ -261,23 +348,34 @@ def _format_date_range(start: str, end: str) -> str:
 
 def _add_experience_entry(doc: Document, job: dict[str, Any]) -> None:
     title_line = doc.add_paragraph()
-    title_line.paragraph_format.space_before = Pt(4)
-    title_line.paragraph_format.space_after = Pt(1)
-    company_run = title_line.add_run(job["company"])
-    _format_run(company_run, bold=True)
-    sep = title_line.add_run(" — ")
-    _format_run(sep)
+    title_line.paragraph_format.space_before = Pt(5)
+    title_line.paragraph_format.space_after = Pt(0)
+
     role_run = title_line.add_run(job["title"])
     _format_run(role_run, bold=True)
 
-    meta_parts = []
+    sep = title_line.add_run("  ·  ")
+    _format_run(sep, color=META_COLOR)
+
+    company_run = title_line.add_run(job["company"])
+    _format_run(company_run, color=META_COLOR)
+
+    tab_run = title_line.add_run("\t" + _format_date_range(job["start"], job["end"]))
+    _format_run(tab_run, color=META_COLOR, size=Pt(9.5))
+
+    p_pr = title_line._p.get_or_add_pPr()
+    tabs = OxmlElement("w:tabs")
+    tab = OxmlElement("w:tab")
+    tab.set(qn("w:val"), "right")
+    tab.set(qn("w:pos"), "9072")
+    tabs.append(tab)
+    p_pr.append(tabs)
+
     if job.get("location"):
-        meta_parts.append(job["location"])
-    meta_parts.append(_format_date_range(job["start"], job["end"]))
-    meta_p = doc.add_paragraph()
-    meta_p.paragraph_format.space_after = Pt(2)
-    meta_run = meta_p.add_run(" | ".join(meta_parts))
-    _format_run(meta_run, size=Pt(10), color=RGBColor(0x55, 0x55, 0x55))
+        meta_p = doc.add_paragraph()
+        meta_p.paragraph_format.space_after = Pt(2)
+        meta_run = meta_p.add_run(job["location"])
+        _format_run(meta_run, size=Pt(9.5), color=META_COLOR)
 
     for bullet in job["bullets"]:
         _add_bullet(doc, bullet)
@@ -321,12 +419,20 @@ def _add_certification_entry(doc: Document, cert: dict[str, Any]) -> None:
 def _add_project_entry(doc: Document, project: dict[str, Any]) -> None:
     title_p = doc.add_paragraph()
     title_p.paragraph_format.space_before = Pt(4)
-    title_p.paragraph_format.space_after = Pt(1)
+    title_p.paragraph_format.space_after = Pt(0)
+
     name_run = title_p.add_run(project["name"])
     _format_run(name_run, bold=True)
+
+    tech = project.get("tech") or project.get("stack")
+    if tech:
+        tech_run = title_p.add_run(f"  —  {tech}")
+        _format_run(tech_run, size=Pt(9.5), color=META_COLOR)
+
     if project.get("url"):
-        url_run = title_p.add_run(f" — {project['url']}")
-        _format_run(url_run, size=Pt(10), color=RGBColor(0x2E, 0x5A, 0x88))
+        url_p = doc.add_paragraph()
+        url_p.paragraph_format.space_after = Pt(1)
+        _add_hyperlink(url_p, project["url"], project["url"])
 
     for bullet in project.get("bullets", []):
         _add_bullet(doc, bullet)
@@ -336,9 +442,9 @@ def _add_bullet(doc: Document, text: str) -> None:
     p = doc.add_paragraph()
     p.paragraph_format.left_indent = BULLET_INDENT
     p.paragraph_format.first_line_indent = -BULLET_HANGING
-    p.paragraph_format.space_after = Pt(2)
-    bullet_run = p.add_run("• ")
-    _format_run(bullet_run)
+    p.paragraph_format.space_after = Pt(1.5)
+    bullet_run = p.add_run("▪  ")
+    _format_run(bullet_run, color=ACCENT_COLOR)
     text_run = p.add_run(text)
     _format_run(text_run)
 

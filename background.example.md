@@ -45,6 +45,7 @@ certifications:
 projects:
   - name: "Resume Tune"
     url: "https://github.com/yourusername/resume-tune"
+    tech: "Python · Streamlit · python-docx · Ollama"
     bullets:
       - "Local Streamlit app that tailors resume content via Ollama and exports DOCX"
 ---

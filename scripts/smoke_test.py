@@ -13,9 +13,10 @@ def main() -> None:
     data = load_background(ROOT / "background.example.md")
     ai_output = {
         "summary": (
-            "Software engineer with 5+ years building scalable backend systems and APIs. "
-            "Experienced in Python, Go, and cloud infrastructure with a track record of "
-            "leading migrations and mentoring engineers."
+            "Software engineer with 5+ years building scalable backend systems and APIs "
+            "handling 2M+ daily requests. Deep experience in Python, Go, AWS, and Kubernetes "
+            "matched to cloud-native platform roles. Ships reliable services with strong CI/CD "
+            "discipline and mentors engineers through code review and pairing."
         ),
         "skills": [
             "Python",
@@ -30,10 +31,16 @@ def main() -> None:
         ],
     }
     docx_bytes = build_resume(data, ai_output)
-    out = ROOT / "output" / "smoke_test_resume.docx"
+    out = ROOT / "output" / "design_preview.docx"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_bytes(docx_bytes)
     print(f"Wrote {out} ({len(docx_bytes)} bytes)")
+    print("Verify in Word/LibreOffice:")
+    print("  - Section headings navy with bold underline")
+    print("  - LinkedIn/GitHub are Ctrl+click hyperlinks")
+    print("  - Skills in two columns with ▪ bullets")
+    print("  - Experience: Role · Company with dates right-aligned on same line")
+    print("  - Project shows inline tech + clickable URL")
 
 
 if __name__ == "__main__":
