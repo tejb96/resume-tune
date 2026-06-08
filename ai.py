@@ -11,6 +11,17 @@ from openai import APIConnectionError, APIStatusError, OpenAI
 
 # Reference fit that keeps AI summary + skills on page 2 of the DOCX template.
 DEFAULT_AI_OUTPUT_MAX_CHARS = 967
+DEFAULT_MAX_SKILL_CATEGORIES = 4
+DEFAULT_MAX_SKILLS_PER_CATEGORY = 5
+DEFAULT_MAX_CHARS_PER_SKILL_LINE = 88
+
+SKILLS_LAYOUT_RULES = (
+    '- "skill_categories": at most {max_skill_categories} categories. '
+    "At most {max_skills_per_category} short skills per category. "
+    "Each category line (\"Name: skill1, skill2, ...\") must fit on one line "
+    "(about {max_chars_per_skill_line} characters). Use terse skill names "
+    '(e.g. "Node.js" not "Node.js and Express.js"). Order by job relevance.'
+)
 
 SYSTEM_PROMPT_TEMPLATE = """You are a professional resume writer. Given the candidate background below and a job description, produce a tailored professional summary and categorized skills.
 
@@ -19,7 +30,7 @@ RULES (strict):
 - JSON schema: {{"summary": "<string>", "skill_categories": [{{"name": "<category>", "skills": ["<skill>", ...]}}, ...]}}
 - TOTAL LENGTH (critical): Count every character in "summary", every category "name", and every skill string. The combined total must be at most {max_chars} characters.
 - "summary": 3-5 sentences, third person or implied first person, targeted to the job description. Use only facts from the background. Prefer tight phrasing over extra detail when near the limit.
-- "skill_categories": 4-6 categories max. Each category has a short label (e.g. "Languages", "Backend", "Cloud & DevOps", "Databases") and 3-8 concise skills comma-joinable in one line. Order categories by relevance to the job description.
+- {skills_layout_rules}
 - Skills must be evidenced in CANDIDATE BACKGROUND only. Do NOT invent skills. Do NOT add testing frameworks, tools, or technologies mentioned only in the job description unless they appear in CANDIDATE BACKGROUND.
 - Do not include any keys other than "summary" and "skill_categories".
 
@@ -34,6 +45,7 @@ RULES (strict):
 - JSON schema: {{"summary": "<string>", "skill_categories": [{{"name": "<category>", "skills": ["<skill>", ...]}}, ...]}}
 - TOTAL LENGTH (critical): Count every character in "summary", every category "name", and every skill string. The combined total must be at most {max_chars} characters.
 - Apply the user's revision request while keeping content targeted to the job description.
+- {skills_layout_rules}
 - Use only facts from the background. Skills must be evidenced in CANDIDATE BACKGROUND only. Do NOT invent skills. Do NOT add skills from the job description unless they appear in CANDIDATE BACKGROUND.
 - Do not include any keys other than "summary" and "skill_categories".
 
@@ -47,7 +59,7 @@ RULES (strict):
 - Output ONLY valid JSON. No markdown code fences. No preamble. No explanation. No trailing text.
 - JSON schema: {{"skill_categories": [{{"name": "<category>", "skills": ["<skill>", ...]}}, ...]}}
 - TOTAL LENGTH (critical): Count every category "name" and every skill string. The combined total must be at most {max_chars} characters.
-- "skill_categories": 4-6 categories max. Each category has a short label (e.g. "Languages", "Backend", "Cloud & DevOps", "Databases") and 3-8 concise skills comma-joinable in one line. Order categories by relevance to the job description.
+- {skills_layout_rules}
 - Skills must be evidenced in CANDIDATE BACKGROUND only. Do NOT invent skills. Do NOT add testing frameworks, tools, or technologies mentioned only in the job description unless they appear in CANDIDATE BACKGROUND.
 - Do not include any keys other than "skill_categories".
 
@@ -75,6 +87,7 @@ RULES (strict):
 - JSON schema: {{"skill_categories": [{{"name": "<category>", "skills": ["<skill>", ...]}}, ...]}}
 - TOTAL LENGTH (critical): Count every category "name" and every skill string. The combined total must be at most {max_chars} characters.
 - Apply the user's revision request while keeping content targeted to the job description.
+- {skills_layout_rules}
 - Use only facts from the background. Skills must be evidenced in CANDIDATE BACKGROUND only. Do NOT invent skills. Do NOT add skills from the job description unless they appear in CANDIDATE BACKGROUND.
 - Do not include any keys other than "skill_categories".
 
@@ -268,13 +281,60 @@ def enforce_output_budget(
     return {"summary": summary, "skill_categories": categories}
 
 
+def skill_category_line_length(name: str, skills: list[str]) -> int:
+    """Character length of a rendered skills category line."""
+    if not skills:
+        return len(name) + 2
+    return len(name) + 2 + len(", ".join(skills))
+
+
+def enforce_skills_layout(
+    skill_categories: list[dict[str, Any]],
+    *,
+    max_categories: int = DEFAULT_MAX_SKILL_CATEGORIES,
+    max_skills_per_category: int = DEFAULT_MAX_SKILLS_PER_CATEGORY,
+    max_chars_per_line: int = DEFAULT_MAX_CHARS_PER_SKILL_LINE,
+) -> list[dict[str, Any]]:
+    """Cap categories/skills and trim each line to fit on one row at generation time."""
+    result: list[dict[str, Any]] = []
+    for cat in skill_categories[:max_categories]:
+        name = cat["name"].strip()
+        skills = [s.strip() for s in cat["skills"][:max_skills_per_category] if s.strip()]
+        while skills and skill_category_line_length(name, skills) > max_chars_per_line:
+            skills.pop()
+        if skills:
+            result.append({"name": name, "skills": skills})
+    return result
+
+
+def _format_skills_layout_rules(
+    *,
+    max_skill_categories: int,
+    max_skills_per_category: int,
+    max_chars_per_skill_line: int,
+) -> str:
+    return SKILLS_LAYOUT_RULES.format(
+        max_skill_categories=max_skill_categories,
+        max_skills_per_category=max_skills_per_category,
+        max_chars_per_skill_line=max_chars_per_skill_line,
+    )
+
+
 def build_system_prompt(
     background_text: str,
     *,
     max_chars: int = DEFAULT_AI_OUTPUT_MAX_CHARS,
     include_summary: bool = True,
     include_skills: bool = True,
+    max_skill_categories: int = DEFAULT_MAX_SKILL_CATEGORIES,
+    max_skills_per_category: int = DEFAULT_MAX_SKILLS_PER_CATEGORY,
+    max_chars_per_skill_line: int = DEFAULT_MAX_CHARS_PER_SKILL_LINE,
 ) -> str:
+    skills_layout_rules = _format_skills_layout_rules(
+        max_skill_categories=max_skill_categories,
+        max_skills_per_category=max_skills_per_category,
+        max_chars_per_skill_line=max_chars_per_skill_line,
+    )
     if include_summary and include_skills:
         template = SYSTEM_PROMPT_TEMPLATE
     elif include_skills:
@@ -283,7 +343,11 @@ def build_system_prompt(
         template = SUMMARY_ONLY_SYSTEM_PROMPT_TEMPLATE
     else:
         raise ValueError("At least one AI section must be included to build a system prompt")
-    return template.format(background_text=background_text, max_chars=max_chars)
+    return template.format(
+        background_text=background_text,
+        max_chars=max_chars,
+        skills_layout_rules=skills_layout_rules,
+    )
 
 
 def build_revision_system_prompt(
@@ -292,7 +356,15 @@ def build_revision_system_prompt(
     max_chars: int = DEFAULT_AI_OUTPUT_MAX_CHARS,
     include_summary: bool = True,
     include_skills: bool = True,
+    max_skill_categories: int = DEFAULT_MAX_SKILL_CATEGORIES,
+    max_skills_per_category: int = DEFAULT_MAX_SKILLS_PER_CATEGORY,
+    max_chars_per_skill_line: int = DEFAULT_MAX_CHARS_PER_SKILL_LINE,
 ) -> str:
+    skills_layout_rules = _format_skills_layout_rules(
+        max_skill_categories=max_skill_categories,
+        max_skills_per_category=max_skills_per_category,
+        max_chars_per_skill_line=max_chars_per_skill_line,
+    )
     if include_summary and include_skills:
         template = REVISION_SYSTEM_PROMPT_TEMPLATE
     elif include_skills:
@@ -301,7 +373,11 @@ def build_revision_system_prompt(
         template = SUMMARY_ONLY_REVISION_SYSTEM_PROMPT_TEMPLATE
     else:
         raise ValueError("At least one AI section must be included to build a revision prompt")
-    return template.format(background_text=background_text, max_chars=max_chars)
+    return template.format(
+        background_text=background_text,
+        max_chars=max_chars,
+        skills_layout_rules=skills_layout_rules,
+    )
 
 
 def format_skill_categories(skill_categories: list[dict[str, Any]]) -> str:
@@ -514,6 +590,9 @@ def _call_with_retries(
     include_summary: bool = True,
     include_skills: bool = True,
     preserved_output: dict[str, Any] | None = None,
+    max_skill_categories: int = DEFAULT_MAX_SKILL_CATEGORIES,
+    max_skills_per_category: int = DEFAULT_MAX_SKILLS_PER_CATEGORY,
+    max_chars_per_skill_line: int = DEFAULT_MAX_CHARS_PER_SKILL_LINE,
 ) -> tuple[dict[str, Any], list[str]]:
     """Call the model with JSON/budget/skill-grounding retries."""
     preserved = preserved_output or dict(EMPTY_AI_OUTPUT)
@@ -575,6 +654,29 @@ def _call_with_retries(
                 continue
             parsed = {"summary": parsed["summary"], "skill_categories": filtered}
 
+        if include_skills:
+            parsed["skill_categories"] = enforce_skills_layout(
+                parsed["skill_categories"],
+                max_categories=max_skill_categories,
+                max_skills_per_category=max_skills_per_category,
+                max_chars_per_line=max_chars_per_skill_line,
+            )
+            if not parsed["skill_categories"]:
+                last_error = AIResponseError(
+                    "Skills could not be fitted to the configured layout limits"
+                )
+                if attempt < max_attempts - 1:
+                    messages = messages + [
+                        {
+                            "role": "user",
+                            "content": (
+                                "Use fewer categories and shorter skill names so each category "
+                                "fits on one line. Reply again with ONLY the JSON object."
+                            ),
+                        }
+                    ]
+                continue
+
         parsed = _merge_parsed_with_preserved(
             parsed,
             preserved,
@@ -622,6 +724,13 @@ def _call_with_retries(
             include_summary=include_summary,
             include_skills=include_skills,
         )
+        if include_skills:
+            trimmed["skill_categories"] = enforce_skills_layout(
+                trimmed["skill_categories"],
+                max_categories=max_skill_categories,
+                max_skills_per_category=max_skills_per_category,
+                max_chars_per_line=max_chars_per_skill_line,
+            )
         print(
             "[ai] trimmed output chars: "
             f"{ai_output_char_count(trimmed['summary'], trimmed['skill_categories'], include_summary=include_summary, include_skills=include_skills)}"
@@ -643,6 +752,9 @@ def generate_tailored_content(
     ai_output_max_chars: int = DEFAULT_AI_OUTPUT_MAX_CHARS,
     include_summary: bool = True,
     include_skills: bool = True,
+    max_skill_categories: int = DEFAULT_MAX_SKILL_CATEGORIES,
+    max_skills_per_category: int = DEFAULT_MAX_SKILLS_PER_CATEGORY,
+    max_chars_per_skill_line: int = DEFAULT_MAX_CHARS_PER_SKILL_LINE,
 ) -> tuple[dict[str, Any], list[str]]:
     """
     Call local LLM and return (parsed JSON, dropped skill warnings).
@@ -663,6 +775,9 @@ def generate_tailored_content(
         max_chars=ai_output_max_chars,
         include_summary=include_summary,
         include_skills=include_skills,
+        max_skill_categories=max_skill_categories,
+        max_skills_per_category=max_skills_per_category,
+        max_chars_per_skill_line=max_chars_per_skill_line,
     )
     client = OpenAI(base_url=endpoint_url, api_key=api_key)
     messages: list[dict[str, str]] = [
@@ -679,6 +794,9 @@ def generate_tailored_content(
             ai_output_max_chars=ai_output_max_chars,
             include_summary=include_summary,
             include_skills=include_skills,
+            max_skill_categories=max_skill_categories,
+            max_skills_per_category=max_skills_per_category,
+            max_chars_per_skill_line=max_chars_per_skill_line,
         )
     except AIResponseError as exc:
         if "Cannot connect to local model API" in str(exc):
@@ -702,6 +820,9 @@ def revise_tailored_content(
     revision_history: list[dict[str, str]] | None = None,
     include_summary: bool = True,
     include_skills: bool = True,
+    max_skill_categories: int = DEFAULT_MAX_SKILL_CATEGORIES,
+    max_skills_per_category: int = DEFAULT_MAX_SKILLS_PER_CATEGORY,
+    max_chars_per_skill_line: int = DEFAULT_MAX_CHARS_PER_SKILL_LINE,
 ) -> tuple[dict[str, Any], list[str]]:
     """
     Revise summary/skills based on user feedback.
@@ -735,6 +856,9 @@ def revise_tailored_content(
         max_chars=ai_output_max_chars,
         include_summary=include_summary,
         include_skills=include_skills,
+        max_skill_categories=max_skill_categories,
+        max_skills_per_category=max_skills_per_category,
+        max_chars_per_skill_line=max_chars_per_skill_line,
     )
     client = OpenAI(base_url=endpoint_url, api_key=api_key)
 
@@ -766,6 +890,9 @@ def revise_tailored_content(
             include_summary=include_summary,
             include_skills=include_skills,
             preserved_output=normalized,
+            max_skill_categories=max_skill_categories,
+            max_skills_per_category=max_skills_per_category,
+            max_chars_per_skill_line=max_chars_per_skill_line,
         )
     except AIResponseError as exc:
         if "Cannot connect to local model API" in str(exc):

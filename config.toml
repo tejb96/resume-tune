@@ -4,10 +4,23 @@ api_key = "lemonade"
 model_name = "llama3.1:8b-FLM"
 output_dir = "./output"
 background_file = "./background.md"
-# Max combined characters for AI summary + skill labels (fits page 2 of the DOCX layout).
-ai_output_max_chars = 967
+# Secondary ceiling for AI summary + skill labels (primary limits below).
+ai_output_max_chars = 600
 # Target page count for rendered PDF (requires LibreOffice).
-max_resume_pages = 2
+max_resume_pages = 1
+# Job-aware bullet selection from background.md (requires LLM when true).
+enable_job_aware_selection = true
+max_bullets_per_role = 3
+max_experience_entries = 3
+max_project_entries = 2
+min_project_entries = 1
+min_project_bullets = 1
+# Skills layout (enforced at generation — never trimmed during page fitting).
+max_skill_categories = 4
+max_skills_per_category = 5
+max_chars_per_skill_line = 88
+# Export only the first N certifications from background.md (AWS SAA first).
+max_certifications = 1
 # Sections to include, in render order (after header).
 # Valid ids: summary, skills, experience, education, projects, certifications
 resume_sections = [

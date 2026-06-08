@@ -12,6 +12,7 @@ from ai import (
     AIResponseError,
     DEFAULT_AI_OUTPUT_MAX_CHARS,
     EMPTY_AI_OUTPUT,
+    enforce_skills_layout,
     filter_skill_categories,
     format_skill_categories,
     generate_tailored_content,
@@ -25,6 +26,13 @@ from resume import (
     load_background,
     resume_filename,
     save_resume_to_disk,
+)
+from selection import (
+    DEFAULT_MIN_PROJECT_BULLETS,
+    DEFAULT_MIN_PROJECT_ENTRIES,
+    default_selection,
+    generate_content_selection,
+    static_content_stats,
 )
 from settings import ROOT, load_settings
 
@@ -49,6 +57,10 @@ def rebuild_artifacts(
     max_pages: int,
     max_chars: int,
     sections: list[str],
+    content_selection: dict | None = None,
+    max_certifications: int | None = None,
+    min_project_entries: int = DEFAULT_MIN_PROJECT_ENTRIES,
+    min_project_bullets: int = DEFAULT_MIN_PROJECT_BULLETS,
 ) -> dict:
     """Build DOCX, HTML preview, and optional PDF from current AI output."""
     artifacts = build_resume_artifacts(
@@ -57,6 +69,10 @@ def rebuild_artifacts(
         max_pages=max_pages,
         max_chars=max_chars,
         sections=sections,
+        content_selection=content_selection,
+        max_certifications=max_certifications,
+        min_project_entries=min_project_entries,
+        min_project_bullets=min_project_bullets,
     )
     candidate_name = background_data["header"]["name"]
     return {
@@ -75,6 +91,10 @@ def apply_artifacts_to_result(
     max_pages: int,
     max_chars: int,
     sections: list[str],
+    content_selection: dict | None = None,
+    max_certifications: int | None = None,
+    min_project_entries: int = DEFAULT_MIN_PROJECT_ENTRIES,
+    min_project_bullets: int = DEFAULT_MIN_PROJECT_BULLETS,
 ) -> dict:
     """Update session result with new AI content and rebuilt preview artifacts."""
     artifacts = rebuild_artifacts(
@@ -83,10 +103,16 @@ def apply_artifacts_to_result(
         max_pages=max_pages,
         max_chars=max_chars,
         sections=sections,
+        content_selection=content_selection,
+        max_certifications=max_certifications,
+        min_project_entries=min_project_entries,
+        min_project_bullets=min_project_bullets,
     )
     fitted = artifacts["ai_output"]
     result["summary"] = fitted["summary"]
     result["skill_categories"] = fitted["skill_categories"]
+    result["content_selection"] = artifacts["content_selection"]
+    result["diagnostics"] = artifacts["diagnostics"]
     if skill_warnings is not None:
         result["skill_warnings"] = skill_warnings
     result["docx_bytes"] = artifacts["docx_bytes"]
@@ -99,6 +125,29 @@ def apply_artifacts_to_result(
     return result
 
 
+def artifact_build_kwargs(result: dict | None = None) -> dict:
+    """Common kwargs for rebuild/apply artifact helpers."""
+    kwargs: dict = {
+        "max_pages": max_pages,
+        "max_chars": max_chars,
+        "sections": resume_sections,
+        "max_certifications": max_certifications,
+        "min_project_entries": min_project_entries,
+        "min_project_bullets": min_project_bullets,
+    }
+    if result is not None:
+        kwargs["content_selection"] = result.get("content_selection")
+    return kwargs
+
+
+def skills_layout_kwargs() -> dict:
+    return {
+        "max_skill_categories": max_skill_categories,
+        "max_skills_per_category": max_skills_per_category,
+        "max_chars_per_skill_line": max_chars_per_skill_line,
+    }
+
+
 def render_page_indicator(page_count: int | None, max_pages: int) -> None:
     if page_count is None:
         st.caption(
@@ -106,11 +155,62 @@ def render_page_indicator(page_count: int | None, max_pages: int) -> None:
         )
         return
     if page_count <= max_pages:
-        st.success(f"Resume: {page_count} page{'s' if page_count != 1 else ''}")
+        st.success(f"Resume: {page_count} page{'s' if page_count != 1 else ''} (target: {max_pages})")
     else:
         st.warning(
             f"Resume: {page_count} pages — content may need shortening (target: {max_pages} pages)."
         )
+
+
+def render_page_fit_diagnostic(
+    diagnostics: dict | None,
+    background_data: dict,
+    *,
+    max_chars: int,
+    include_summary: bool,
+    include_skills: bool,
+    enable_job_aware_selection: bool,
+) -> None:
+    """Show page-fit stats and trim-stalled guidance in the sidebar."""
+    if diagnostics:
+        stats = diagnostics
+    else:
+        stats = {
+            **static_content_stats(background_data),
+            "page_count": None,
+            "max_pages": None,
+            "ai_char_count": 0,
+            "ai_char_budget": max_chars,
+            "trim_stalled": False,
+        }
+
+    with st.expander("Page fit details", expanded=bool(stats.get("trim_stalled"))):
+        page_count = stats.get("page_count")
+        max_pages = stats.get("max_pages")
+        if page_count is not None and max_pages is not None:
+            st.caption(f"Pages: **{page_count}** / target **{max_pages}**")
+        else:
+            st.caption("Pages: unavailable (LibreOffice required for PDF measurement)")
+
+        if include_summary or include_skills:
+            ai_chars = stats.get("ai_char_count", 0)
+            st.caption(f"AI content: **{ai_chars}** / **{max_chars}** characters")
+
+        st.caption(
+            f"Experience: **{stats.get('experience_entries', 0)}** roles, "
+            f"**{stats.get('experience_bullets', 0)}** bullets"
+        )
+        st.caption(
+            f"Projects: **{stats.get('project_entries', 0)}** entries, "
+            f"**{stats.get('project_bullets', 0)}** bullets"
+        )
+
+        if stats.get("trim_stalled"):
+            st.warning(
+                "Still over the page budget after trimming experience and project bullets. "
+                "Skills were not modified. Shorten background.md, lower "
+                "max_experience_entries / max_bullets_per_role, or omit sections in config.toml."
+            )
 
 
 def render_save_section(result: dict, output_dir: Path) -> None:
@@ -185,10 +285,21 @@ api_key = config.get("api_key", "ollama")
 default_model = config.get("model_name", "")
 max_chars = config.get("ai_output_max_chars", DEFAULT_AI_OUTPUT_MAX_CHARS)
 max_pages = int(config.get("max_resume_pages", 2))
+enable_job_aware_selection = bool(config.get("enable_job_aware_selection", False))
+max_bullets_per_role = int(config.get("max_bullets_per_role", 3))
+max_experience_entries = int(config.get("max_experience_entries", 4))
+max_project_entries = int(config.get("max_project_entries", 2))
+min_project_entries = int(config.get("min_project_entries", 1))
+min_project_bullets = int(config.get("min_project_bullets", 1))
+max_skill_categories = int(config.get("max_skill_categories", 4))
+max_skills_per_category = int(config.get("max_skills_per_category", 5))
+max_chars_per_skill_line = int(config.get("max_chars_per_skill_line", 88))
+max_certifications = int(config.get("max_certifications", 1))
 resume_sections = config["resume_sections"]
 include_summary = "summary" in resume_sections
 include_skills = "skills" in resume_sections
 needs_ai = include_summary or include_skills
+needs_job_description = needs_ai or enable_job_aware_selection
 models = model_options(config)
 if default_model and default_model not in models:
     models = [default_model, *models]
@@ -229,8 +340,8 @@ with st.sidebar:
         height=280,
         placeholder=(
             "Paste the full job description here..."
-            if needs_ai
-            else "Optional when no AI sections are configured in config.toml."
+            if needs_job_description
+            else "Optional."
         ),
     )
     model_index = models.index(default_model) if default_model in models else 0
@@ -257,16 +368,45 @@ if needs_ai and not endpoint_url:
     )
     st.stop()
 
+if enable_job_aware_selection and not endpoint_url:
+    st.error(
+        "Job-aware selection requires OPENAI_BASE_URL in `.env` "
+        "or `endpoint_url` in config.toml."
+    )
+    st.stop()
+
 if "result" not in st.session_state:
     st.session_state.result = None
 if "review_nonce" not in st.session_state:
     st.session_state.review_nonce = 0
 
 if generate:
-    if needs_ai and not job_description.strip():
+    if needs_job_description and not job_description.strip():
         st.warning("Please paste a job description first.")
     else:
         try:
+            content_selection = None
+            if enable_job_aware_selection:
+                selection_limits = {
+                    "max_experience_entries": max_experience_entries,
+                    "max_bullets_per_role": max_bullets_per_role,
+                    "max_project_entries": max_project_entries,
+                    "min_project_entries": min_project_entries,
+                    "min_project_bullets": min_project_bullets,
+                }
+                if job_description.strip():
+                    with st.spinner("Selecting job-relevant experience and projects..."):
+                        content_selection = generate_content_selection(
+                            job_description,
+                            background_data,
+                            endpoint_url=endpoint_url,
+                            model_name=selected_model,
+                            api_key=api_key,
+                            **selection_limits,
+                        )
+                else:
+                    content_selection = default_selection(background_data, **selection_limits)
+
             if needs_ai:
                 with st.spinner(
                     "Generating tailored summary and skills..."
@@ -286,9 +426,11 @@ if generate:
                         ai_output_max_chars=max_chars,
                         include_summary=include_summary,
                         include_skills=include_skills,
+                        **skills_layout_kwargs(),
                     )
             else:
                 ai_output, skill_warnings = dict(EMPTY_AI_OUTPUT), []
+
             with st.spinner("Building resume preview..."):
                 st.session_state.review_nonce += 1
                 result = apply_artifacts_to_result(
@@ -296,9 +438,8 @@ if generate:
                     background_data,
                     ai_output,
                     skill_warnings=skill_warnings,
-                    max_pages=max_pages,
-                    max_chars=max_chars,
-                    sections=resume_sections,
+                    content_selection=content_selection,
+                    **artifact_build_kwargs(),
                 )
                 result["job_description"] = job_description.strip()
                 result["revision_history"] = []
@@ -330,6 +471,17 @@ else:
         st.warning(
             "Skills removed because they were not found in your background file: "
             + ", ".join(result["skill_warnings"])
+        )
+
+    diagnostics = result.get("diagnostics") or {}
+    if diagnostics.get("trim_stalled"):
+        page_count = diagnostics.get("page_count")
+        max_p = diagnostics.get("max_pages", max_pages)
+        st.error(
+            f"Resume is still {page_count} page(s) (target: {max_p}) after trimming experience "
+            "and project bullets. Skills were not modified. Shorten bullets in background.md, "
+            "lower max_experience_entries / max_bullets_per_role in config.toml, or remove "
+            "sections such as projects or certifications."
         )
 
     left_col, right_col = st.columns([2, 3], gap="large")
@@ -377,6 +529,7 @@ else:
                             revision_history=result.get("revision_history"),
                             include_summary=include_summary,
                             include_skills=include_skills,
+                            **skills_layout_kwargs(),
                         )
                         with st.spinner("Updating resume preview..."):
                             history = list(result.get("revision_history", []))
@@ -392,9 +545,7 @@ else:
                                 background_data,
                                 ai_output,
                                 skill_warnings=skill_warnings,
-                                max_pages=max_pages,
-                                max_chars=max_chars,
-                                sections=resume_sections,
+                                **artifact_build_kwargs(result),
                             )
                             result["revision_history"] = history
                             st.session_state.review_nonce += 1
@@ -447,6 +598,15 @@ else:
                             )
                         elif not filtered:
                             apply_error = "No valid skills remain after background check."
+                        else:
+                            filtered = enforce_skills_layout(
+                                filtered,
+                                **skills_layout_kwargs(),
+                            )
+                            if not filtered:
+                                apply_error = (
+                                    "Skills could not fit the configured one-line layout limits."
+                                )
 
                     if apply_error:
                         st.error(apply_error)
@@ -459,9 +619,7 @@ else:
                                     "summary": manual_summary if include_summary else "",
                                     "skill_categories": filtered if include_skills else [],
                                 },
-                                max_pages=max_pages,
-                                max_chars=max_chars,
-                                sections=resume_sections,
+                                **artifact_build_kwargs(result),
                             )
                             st.session_state.review_nonce += 1
                             st.rerun()
@@ -469,6 +627,14 @@ else:
             st.caption("No AI sections configured. Edit background.md or config.toml to enable revision.")
 
         render_save_section(result, output_dir)
+        render_page_fit_diagnostic(
+            result.get("diagnostics"),
+            background_data,
+            max_chars=max_chars,
+            include_summary=include_summary,
+            include_skills=include_skills,
+            enable_job_aware_selection=enable_job_aware_selection,
+        )
 
     with right_col:
         st.subheader("Resume preview")

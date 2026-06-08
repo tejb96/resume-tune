@@ -59,6 +59,8 @@ def test_build_resume_artifacts_returns_docx_and_html(
 
     assert artifacts["docx_bytes"]
     assert artifacts["ai_output"]["skill_categories"]
+    assert "content_selection" in artifacts
+    assert "diagnostics" in artifacts
     assert sample_background["header"]["name"] in artifacts["html"]
     assert "pdf_bytes" in artifacts
     assert "page_count" in artifacts
@@ -92,7 +94,7 @@ def test_fit_resume_to_page_budget_returns_page_count(
     sample_background: dict,
     sample_ai_output: dict,
 ) -> None:
-    fitted, _docx, pdf_bytes, page_count = fit_resume_to_page_budget(
+    fitted, _selection, _docx, pdf_bytes, page_count, diagnostics = fit_resume_to_page_budget(
         sample_background,
         sample_ai_output,
         max_pages=2,
@@ -103,6 +105,7 @@ def test_fit_resume_to_page_budget_returns_page_count(
     assert pdf_bytes
     assert page_count is not None
     assert page_count >= 1
+    assert "experience_entries" in diagnostics
 
 
 def test_legacy_flat_skills_migrated_in_build_resume(

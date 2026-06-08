@@ -16,7 +16,7 @@ from ai import (
     parse_response,
     revise_tailored_content,
 )
-from resume import trim_ai_output_one_step
+from resume import trim_summary_one_step
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -75,17 +75,19 @@ def test_enforce_output_budget_skips_excluded_summary() -> None:
     assert trimmed["skill_categories"]
 
 
-def test_trim_ai_output_one_step_skips_excluded_summary() -> None:
+def test_trim_summary_one_step_skips_skills() -> None:
+    from resume import trim_summary_one_step
+
     ai_output = {
         "summary": "One sentence. Second sentence. Third sentence.",
         "skill_categories": [{"name": "Languages", "skills": ["Python", "Go"]}],
     }
-    trimmed = trim_ai_output_one_step(
+    trimmed = trim_summary_one_step(
         ai_output,
-        sections=["skills", "experience"],
+        sections=["summary", "skills", "experience"],
     )
-    assert trimmed["summary"] == ai_output["summary"]
-    assert trimmed["skill_categories"][0]["skills"] == ["Python"]
+    assert trimmed["summary"] != ai_output["summary"]
+    assert trimmed["skill_categories"] == ai_output["skill_categories"]
 
 
 def test_generate_tailored_content_skips_llm_when_both_excluded() -> None:

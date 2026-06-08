@@ -83,6 +83,27 @@ Omitting `summary` and/or `skills` also skips LLM generation for those fields. T
 
 Background-backed sections still render only when their YAML lists are non-empty. Restart Streamlit after editing `config.toml` so cached settings reload.
 
+### One-page layout and job-aware selection
+
+`config.toml` controls PDF page fitting (requires LibreOffice), job-aware bullet selection, and skills layout:
+
+```toml
+max_resume_pages = 1
+ai_output_max_chars = 600
+enable_job_aware_selection = true
+max_bullets_per_role = 3
+max_experience_entries = 3
+max_project_entries = 2
+max_skill_categories = 4
+max_skills_per_category = 5
+max_chars_per_skill_line = 88
+max_certifications = 1
+```
+
+When `enable_job_aware_selection` is true, the LLM picks existing experience/project bullets by index (verbatim from `background.md`) ranked for the job description. Skills are optimized at generation time (one line per category, count limits) and are **not** trimmed during page fitting. If the PDF is still over one page, the fit loop trims selected experience/project bullets only. Use **Page fit details** in the sidebar to see counts and trim status.
+
+Keep a rich `background.md` as source of truth; the app selects what ships per job rather than rewriting bullets. List your primary certification first in YAML when using `max_certifications = 1` (e.g. AWS SAA).
+
 ## Dev checks
 
 ```bash
@@ -97,6 +118,7 @@ uv run pytest                                # unit tests (optional: uv sync --e
 |------|------|
 | `app.py` | Streamlit UI (preview, chat revision, save) |
 | `ai.py` | Local LLM call, JSON parse/validate, revision |
+| `selection.py` | Job-aware experience/project bullet selection by index |
 | `settings.py` | `.env` + `config.toml` loader |
 | `resume.py` | python-docx formatter, HTML/PDF export |
 | `background.example.md` | Public resume template (frontmatter + AI context) |

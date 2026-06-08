@@ -15,8 +15,17 @@ import mammoth
 from pypdf import PdfReader
 
 import frontmatter
-from ai import enforce_output_budget, normalize_ai_output
+from ai import ai_output_char_count, normalize_ai_output
 from docx import Document
+from selection import (
+    DEFAULT_MIN_PROJECT_BULLETS,
+    DEFAULT_MIN_PROJECT_ENTRIES,
+    apply_content_selection,
+    full_selection,
+    selection_trim_exhausted,
+    static_content_stats,
+    trim_selection_one_step,
+)
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.opc.constants import RELATIONSHIP_TYPE as RT
 from docx.oxml.ns import qn
@@ -25,11 +34,10 @@ from docx.shared import Inches, Pt, RGBColor
 
 FONT_NAME = "Calibri"
 FONT_BODY = Pt(10)
-FONT_NAME_SIZE = Pt(17)
-FONT_TITLE_SIZE = Pt(10.5)
-FONT_SECTION = Pt(10.5)
-MARGIN_TB = Inches(0.55)
-MARGIN_LR = Inches(0.65)
+FONT_NAME_SIZE = Pt(15)
+FONT_SECTION = Pt(11)
+MARGIN_TB = Inches(0.5)
+MARGIN_LR = Inches(0.6)
 SECTION_SPACING_BEFORE = Pt(7)
 SECTION_SPACING_AFTER = Pt(3)
 BULLET_INDENT = Inches(0.22)
@@ -150,8 +158,11 @@ def _render_skills_section(
     data: dict[str, Any],
     normalized: dict[str, Any],
 ) -> None:
+    categories = normalized["skill_categories"]
+    if not categories:
+        return
     _add_section_heading(doc, "Skills")
-    _add_skill_categories(doc, normalized["skill_categories"])
+    _add_skill_categories(doc, categories)
 
 
 def _render_experience_section(
@@ -217,8 +228,20 @@ def build_resume(
     ai_output: dict[str, Any],
     *,
     sections: list[str] | None = None,
+    content_selection: dict[str, Any] | None = None,
+    max_certifications: int | None = None,
 ) -> bytes:
     """Merge structured background + AI fields, return DOCX bytes."""
+    render_data = (
+        apply_content_selection(data, content_selection)
+        if content_selection is not None
+        else data
+    )
+    if max_certifications is not None:
+        render_data = {
+            **render_data,
+            "certifications": render_data.get("certifications", [])[:max_certifications],
+        }
     resolved_sections = resolve_resume_sections(sections)
     include_summary, include_skills = ai_section_flags(resolved_sections)
     normalized = normalize_ai_output(
@@ -231,9 +254,9 @@ def build_resume(
     _set_document_margins(doc)
     _set_default_font(doc)
 
-    _add_header(doc, data["header"])
+    _add_header(doc, render_data["header"])
     for section_id in resolved_sections:
-        _SECTION_RENDERERS[section_id](doc, data, normalized)
+        _SECTION_RENDERERS[section_id](doc, render_data, normalized)
 
     buffer = io.BytesIO()
     doc.save(buffer)
@@ -341,42 +364,36 @@ def _add_header(doc: Document, header: dict[str, Any]) -> None:
     name_run = name_p.add_run(header["name"])
     _format_run(name_run, bold=True, size=FONT_NAME_SIZE)
 
-    title = header.get("title")
-    if title:
-        title_p = doc.add_paragraph()
-        title_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        title_p.paragraph_format.space_after = Pt(4)
-        title_run = title_p.add_run(title)
-        _format_run(title_run, size=FONT_TITLE_SIZE)
-
     contact_parts = [
         header.get("email"),
         header.get("phone"),
         header.get("location"),
     ]
-    contact_line = " | ".join(p for p in contact_parts if p)
-    if contact_line:
-        contact_p = doc.add_paragraph()
-        contact_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        contact_p.paragraph_format.space_after = Pt(2)
-        contact_run = contact_p.add_run(contact_line)
-        _format_run(contact_run, size=Pt(10), color=META_COLOR)
-
+    contact_values = [p for p in contact_parts if p]
     links = header.get("links") or []
-    if links:
-        links_p = doc.add_paragraph()
-        links_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        links_p.paragraph_format.space_after = Pt(8)
+    valid_links = [
+        link for link in links if link.get("label") and link.get("url")
+    ]
+    if contact_values or valid_links:
+        meta_p = doc.add_paragraph()
+        meta_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        meta_p.paragraph_format.space_after = Pt(8)
 
-        for i, link in enumerate(links):
-            label = link.get("label", "")
-            url = link.get("url", "")
-            if not (label and url):
-                continue
-            if i > 0:
-                sep_run = links_p.add_run("  |  ")
+        first = True
+        for part in contact_values:
+            if not first:
+                sep_run = meta_p.add_run(" | ")
                 _format_run(sep_run, size=Pt(10), color=META_COLOR)
-            _add_hyperlink(links_p, url, label)
+            part_run = meta_p.add_run(part)
+            _format_run(part_run, size=Pt(10), color=META_COLOR)
+            first = False
+
+        for link in valid_links:
+            if not first:
+                sep_run = meta_p.add_run(" | ")
+                _format_run(sep_run, size=Pt(10), color=META_COLOR)
+            _add_hyperlink(meta_p, link["url"], link["label"])
+            first = False
 
 
 def _add_skill_categories(doc: Document, skill_categories: list[dict[str, Any]]) -> None:
@@ -501,14 +518,25 @@ def _add_project_entry(doc: Document, project: dict[str, Any]) -> None:
         _add_bullet(doc, bullet)
 
 
+def _prevent_orphan_word(text: str) -> str:
+    """Join last 2 words with non-breaking spaces to avoid a lone short word wrapping."""
+    words = text.split()
+    if len(words) < 3:
+        return text
+    head, tail = words[:-2], words[-2:]
+    return " ".join(head) + "\u00a0" + "\u00a0".join(tail)
+
+
 def _add_bullet(doc: Document, text: str) -> None:
     p = doc.add_paragraph()
     p.paragraph_format.left_indent = BULLET_INDENT
     p.paragraph_format.first_line_indent = -BULLET_HANGING
-    p.paragraph_format.space_after = Pt(1.5)
+    p.paragraph_format.space_after = Pt(1)
+    pPr = p._p.get_or_add_pPr()
+    pPr.append(OxmlElement("w:widowControl"))
     bullet_run = p.add_run("▪  ")
     _format_run(bullet_run, color=ACCENT_COLOR)
-    text_run = p.add_run(text)
+    text_run = p.add_run(_prevent_orphan_word(text))
     _format_run(text_run)
 
 
@@ -522,7 +550,7 @@ PREVIEW_HTML_STYLE = """
     color: #222;
     max-width: 8.5in;
     margin: 0 auto;
-    padding: 0.55in 0.65in;
+    padding: 0.5in 0.6in;
   }
   p { margin: 0.25em 0; }
   a { color: #1A568C; }
@@ -601,37 +629,35 @@ def pdf_page_count(pdf_bytes: bytes) -> int:
     return len(PdfReader(io.BytesIO(pdf_bytes)).pages)
 
 
-def trim_ai_output_one_step(
+def trim_summary_one_step(
     ai_output: dict[str, Any],
     *,
     sections: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Remove one unit of content to reduce rendered page count."""
+    """Remove one summary sentence to reduce rendered page count. Skills are never trimmed."""
     include_summary, include_skills = ai_section_flags(sections)
     normalized = normalize_ai_output(
         ai_output,
         include_summary=include_summary,
         include_skills=include_skills,
     )
+    if not include_summary:
+        return normalized
+
     summary = normalized["summary"]
     categories = [
         {"name": cat["name"], "skills": list(cat["skills"])}
         for cat in normalized["skill_categories"]
     ]
-
-    if include_skills and categories and categories[-1]["skills"]:
-        categories[-1]["skills"].pop()
-        if not categories[-1]["skills"]:
-            categories.pop()
-        return {"summary": summary, "skill_categories": categories}
-
-    if include_summary:
-        sentences = re.split(r"(?<=[.!?])\s+", summary)
-        if len(sentences) > 1:
-            sentences.pop()
-            return {"summary": " ".join(sentences).strip(), "skill_categories": categories}
-
+    sentences = re.split(r"(?<=[.!?])\s+", summary)
+    if len(sentences) > 1:
+        sentences.pop()
+        return {"summary": " ".join(sentences).strip(), "skill_categories": categories}
     return normalized
+
+
+# Backward-compatible alias for tests migrating from skill-trimming behavior.
+trim_ai_output_one_step = trim_summary_one_step
 
 
 def fit_resume_to_page_budget(
@@ -641,11 +667,15 @@ def fit_resume_to_page_budget(
     max_pages: int = 2,
     max_chars: int | None = None,
     sections: list[str] | None = None,
-) -> tuple[dict[str, Any], bytes, bytes | None, int | None]:
+    content_selection: dict[str, Any] | None = None,
+    max_certifications: int | None = None,
+    min_project_entries: int = DEFAULT_MIN_PROJECT_ENTRIES,
+    min_project_bullets: int = DEFAULT_MIN_PROJECT_BULLETS,
+) -> tuple[dict[str, Any], dict[str, Any], bytes, bytes | None, int | None, dict[str, Any]]:
     """
-    Trim AI output until the rendered PDF fits max_pages.
+    Trim AI output and static selection until the rendered PDF fits max_pages.
 
-    Returns (fitted_ai_output, docx_bytes, pdf_bytes, page_count).
+    Returns (fitted_ai_output, fitted_selection, docx_bytes, pdf_bytes, page_count, diagnostics).
     page_count is None when LibreOffice is unavailable.
     """
     include_summary, include_skills = ai_section_flags(sections)
@@ -654,35 +684,125 @@ def fit_resume_to_page_budget(
         include_summary=include_summary,
         include_skills=include_skills,
     )
-    if max_chars is not None and (include_summary or include_skills):
-        current = enforce_output_budget(
-            current["summary"],
-            current["skill_categories"],
-            max_chars,
+    if content_selection is None:
+        current_selection = full_selection(background_data)
+    else:
+        current_selection = {
+            "experience_selections": [
+                {"role_index": e["role_index"], "bullet_indices": list(e["bullet_indices"])}
+                for e in content_selection.get("experience_selections", [])
+            ],
+            "project_selections": [
+                {"project_index": p["project_index"], "bullet_indices": list(p["bullet_indices"])}
+                for p in content_selection.get("project_selections", [])
+            ],
+            "education_indices": list(content_selection.get("education_indices", [])),
+        }
+
+    docx_bytes = build_resume(
+        background_data,
+        current,
+        sections=sections,
+        content_selection=current_selection,
+        max_certifications=max_certifications,
+    )
+    pdf_bytes = docx_to_pdf(docx_bytes)
+    trim_stalled = False
+    if pdf_bytes is None:
+        diagnostics = _page_fit_diagnostics(
+            background_data,
+            current,
+            current_selection,
+            page_count=None,
+            max_pages=max_pages,
+            max_chars=max_chars,
             include_summary=include_summary,
             include_skills=include_skills,
+            trim_stalled=False,
         )
-
-    docx_bytes = build_resume(background_data, current, sections=sections)
-    pdf_bytes = docx_to_pdf(docx_bytes)
-    if pdf_bytes is None:
-        return current, docx_bytes, None, None
+        return current, current_selection, docx_bytes, None, None, diagnostics
 
     page_count = pdf_page_count(pdf_bytes)
     for _ in range(30):
         if page_count <= max_pages:
             break
-        trimmed = trim_ai_output_one_step(current, sections=sections)
-        if trimmed == current:
+        if not selection_trim_exhausted(
+            current_selection,
+            min_project_entries=min_project_entries,
+            min_project_bullets=min_project_bullets,
+        ):
+            current_selection = trim_selection_one_step(
+                current_selection,
+                min_project_entries=min_project_entries,
+                min_project_bullets=min_project_bullets,
+            )
+        elif include_summary:
+            trimmed = trim_summary_one_step(current, sections=sections)
+            if trimmed != current:
+                current = trimmed
+            else:
+                trim_stalled = page_count > max_pages
+                break
+        else:
+            trim_stalled = page_count > max_pages
             break
-        current = trimmed
-        docx_bytes = build_resume(background_data, current, sections=sections)
+
+        docx_bytes = build_resume(
+            background_data,
+            current,
+            sections=sections,
+            content_selection=current_selection,
+            max_certifications=max_certifications,
+        )
         pdf_bytes = docx_to_pdf(docx_bytes)
         if pdf_bytes is None:
             break
         page_count = pdf_page_count(pdf_bytes)
 
-    return current, docx_bytes, pdf_bytes, page_count
+    if page_count is not None and page_count > max_pages:
+        trim_stalled = True
+
+    diagnostics = _page_fit_diagnostics(
+        background_data,
+        current,
+        current_selection,
+        page_count=page_count,
+        max_pages=max_pages,
+        max_chars=max_chars,
+        include_summary=include_summary,
+        include_skills=include_skills,
+        trim_stalled=trim_stalled,
+    )
+    return current, current_selection, docx_bytes, pdf_bytes, page_count, diagnostics
+
+
+def _page_fit_diagnostics(
+    background_data: dict[str, Any],
+    ai_output: dict[str, Any],
+    content_selection: dict[str, Any],
+    *,
+    page_count: int | None,
+    max_pages: int,
+    max_chars: int | None,
+    include_summary: bool,
+    include_skills: bool,
+    trim_stalled: bool,
+) -> dict[str, Any]:
+    stats = static_content_stats(background_data, content_selection)
+    fitted_chars = ai_output_char_count(
+        ai_output["summary"],
+        ai_output["skill_categories"],
+        include_summary=include_summary,
+        include_skills=include_skills,
+    )
+    return {
+        **stats,
+        "page_count": page_count,
+        "max_pages": max_pages,
+        "ai_char_count": fitted_chars,
+        "ai_char_budget": max_chars,
+        "trim_stalled": trim_stalled,
+    }
 
 
 def build_resume_artifacts(
@@ -692,19 +812,31 @@ def build_resume_artifacts(
     max_pages: int = 2,
     max_chars: int | None = None,
     sections: list[str] | None = None,
+    content_selection: dict[str, Any] | None = None,
+    max_certifications: int | None = None,
+    min_project_entries: int = DEFAULT_MIN_PROJECT_ENTRIES,
+    min_project_bullets: int = DEFAULT_MIN_PROJECT_BULLETS,
 ) -> dict[str, Any]:
     """Build DOCX and derived preview/export artifacts from background + AI output."""
-    fitted_output, docx_bytes, pdf_bytes, page_count = fit_resume_to_page_budget(
-        background_data,
-        ai_output,
-        max_pages=max_pages,
-        max_chars=max_chars,
-        sections=sections,
+    fitted_output, fitted_selection, docx_bytes, pdf_bytes, page_count, diagnostics = (
+        fit_resume_to_page_budget(
+            background_data,
+            ai_output,
+            max_pages=max_pages,
+            max_chars=max_chars,
+            sections=sections,
+            content_selection=content_selection,
+            max_certifications=max_certifications,
+            min_project_entries=min_project_entries,
+            min_project_bullets=min_project_bullets,
+        )
     )
     return {
         "ai_output": fitted_output,
+        "content_selection": fitted_selection,
         "docx_bytes": docx_bytes,
         "html": docx_to_html(docx_bytes),
         "pdf_bytes": pdf_bytes,
         "page_count": page_count,
+        "diagnostics": diagnostics,
     }
