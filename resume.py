@@ -449,13 +449,18 @@ def _add_bullet(doc: Document, text: str) -> None:
     _format_run(text_run)
 
 
-def save_resume_to_disk(docx_bytes: bytes, output_dir: Path, slug: str = "resume") -> Path:
-    """Write DOCX bytes to output_dir with a timestamped filename."""
-    output_dir.mkdir(parents=True, exist_ok=True)
-    from datetime import datetime
+def resume_filename(candidate_name: str) -> str:
+    """Build a stable DOCX filename from the candidate name in background.md."""
+    safe = re.sub(r"[^\w\-]+", "_", candidate_name.strip()).strip("_")
+    return f"{safe}_Resume.docx" if safe else "resume.docx"
 
-    safe_slug = re.sub(r"[^\w\-]+", "_", slug).strip("_") or "resume"
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    path = output_dir / f"{timestamp}_{safe_slug}.docx"
+
+def save_resume_to_disk(docx_bytes: bytes, output_dir: Path, filename: str) -> Path:
+    """Write DOCX bytes to output_dir, overwriting any existing file with the same name."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    safe_name = Path(filename).name
+    if not safe_name or safe_name in (".", ".."):
+        safe_name = "resume.docx"
+    path = output_dir / safe_name
     path.write_bytes(docx_bytes)
     return path

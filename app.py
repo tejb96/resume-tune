@@ -13,7 +13,7 @@ from ai import (
     ai_output_char_count,
     generate_tailored_content,
 )
-from resume import build_resume, load_background, save_resume_to_disk
+from resume import build_resume, load_background, resume_filename, save_resume_to_disk
 from settings import ROOT, load_settings
 
 
@@ -117,6 +117,7 @@ if generate:
                     "skill_warnings": skill_warnings,
                     "docx_bytes": None,
                     "saved_path": None,
+                    "filename": None,
                 }
             except AIResponseError as exc:
                 st.error(str(exc))
@@ -186,17 +187,19 @@ else:
             try:
                 ai_output = {"summary": summary_stripped, "skills": skills}
                 docx_bytes = build_resume(background_data, ai_output)
+                filename = resume_filename(background_data["header"]["name"])
                 saved_path = None
                 try:
                     saved_path = save_resume_to_disk(
                         docx_bytes,
                         output_dir,
-                        slug="resume",
+                        filename,
                     )
                 except OSError as exc:
                     st.warning(f"Could not save to disk: {exc}")
 
                 st.session_state.result["docx_bytes"] = docx_bytes
+                st.session_state.result["filename"] = filename
                 st.session_state.result["saved_path"] = (
                     str(saved_path) if saved_path else None
                 )
@@ -205,11 +208,12 @@ else:
                 st.error(str(exc))
 
     if result.get("docx_bytes"):
-        st.success("DOCX ready.")
+        download_name = result.get("filename") or "resume.docx"
+        st.success(f"DOCX ready: {download_name}")
         st.download_button(
             label="Download DOCX",
             data=result["docx_bytes"],
-            file_name="resume.docx",
+            file_name=download_name,
             mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             type="primary",
         )

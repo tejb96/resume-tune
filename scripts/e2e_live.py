@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from ai import DEFAULT_AI_OUTPUT_MAX_CHARS, generate_tailored_content
-from resume import build_resume, load_background, save_resume_to_disk
+from resume import build_resume, load_background, resume_filename, save_resume_to_disk
 from settings import load_settings
 
 
@@ -51,7 +51,8 @@ def main() -> None:
 
     data = load_background(background_path)
     docx_bytes = build_resume(data, ai_output)
-    path = save_resume_to_disk(docx_bytes, output_dir, slug="e2e_live")
+    filename = resume_filename(data["header"]["name"])
+    path = save_resume_to_disk(docx_bytes, output_dir, filename)
     print(f"OK summary={len(ai_output['summary'])} chars skills={len(ai_output['skills'])}")
     if warnings:
         print(f"Warnings: skills not in background: {warnings}")
