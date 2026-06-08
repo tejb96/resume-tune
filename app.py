@@ -5,15 +5,27 @@ from __future__ import annotations
 from pathlib import Path
 
 import streamlit as st
+import streamlit.components.v1 as components
 import yaml
 
 from ai import (
     AIResponseError,
     DEFAULT_AI_OUTPUT_MAX_CHARS,
-    ai_output_char_count,
+    filter_skill_categories,
+    format_skill_categories,
     generate_tailored_content,
+    normalize_ai_output,
+    parse_skill_categories,
+    read_background_text,
+    revise_tailored_content,
 )
-from resume import build_resume, load_background, resume_filename, save_resume_to_disk
+from resume import (
+    build_resume_artifacts,
+    libreoffice_available,
+    load_background,
+    resume_filename,
+    save_resume_to_disk,
+)
 from settings import ROOT, load_settings
 
 
@@ -30,8 +42,135 @@ def model_options(config: dict) -> list[str]:
     return [m for m in combined if m]
 
 
-def parse_skills(skills_text: str) -> list[str]:
-    return [line.strip() for line in skills_text.splitlines() if line.strip()]
+def rebuild_artifacts(
+    background_data: dict,
+    ai_output: dict,
+    *,
+    max_pages: int,
+    max_chars: int,
+) -> dict:
+    """Build DOCX, HTML preview, and optional PDF from current AI output."""
+    artifacts = build_resume_artifacts(
+        background_data,
+        ai_output,
+        max_pages=max_pages,
+        max_chars=max_chars,
+    )
+    candidate_name = background_data["header"]["name"]
+    return {
+        **artifacts,
+        "filename_docx": resume_filename(candidate_name, "docx"),
+        "filename_pdf": resume_filename(candidate_name, "pdf"),
+    }
+
+
+def apply_artifacts_to_result(
+    result: dict,
+    background_data: dict,
+    ai_output: dict,
+    skill_warnings: list[str] | None = None,
+    *,
+    max_pages: int,
+    max_chars: int,
+) -> dict:
+    """Update session result with new AI content and rebuilt preview artifacts."""
+    artifacts = rebuild_artifacts(
+        background_data,
+        ai_output,
+        max_pages=max_pages,
+        max_chars=max_chars,
+    )
+    fitted = artifacts["ai_output"]
+    result["summary"] = fitted["summary"]
+    result["skill_categories"] = fitted["skill_categories"]
+    if skill_warnings is not None:
+        result["skill_warnings"] = skill_warnings
+    result["docx_bytes"] = artifacts["docx_bytes"]
+    result["html"] = artifacts["html"]
+    result["pdf_bytes"] = artifacts["pdf_bytes"]
+    result["page_count"] = artifacts["page_count"]
+    result["filename_docx"] = artifacts["filename_docx"]
+    result["filename_pdf"] = artifacts["filename_pdf"]
+    result["saved_paths"] = {"docx": None, "pdf": None}
+    return result
+
+
+def render_page_indicator(page_count: int | None, max_pages: int) -> None:
+    if page_count is None:
+        st.caption(
+            "Page count unavailable. Install LibreOffice for accurate PDF preview and page fitting."
+        )
+        return
+    if page_count <= max_pages:
+        st.success(f"Resume: {page_count} page{'s' if page_count != 1 else ''}")
+    else:
+        st.warning(
+            f"Resume: {page_count} pages — content may need shortening (target: {max_pages} pages)."
+        )
+
+
+def render_save_section(result: dict, output_dir: Path) -> None:
+    st.subheader("Save")
+    save_col_docx, save_col_pdf = st.columns(2)
+
+    docx_bytes = result.get("docx_bytes")
+    pdf_bytes = result.get("pdf_bytes")
+    filename_docx = result.get("filename_docx") or "resume.docx"
+    filename_pdf = result.get("filename_pdf") or "resume.pdf"
+
+    with save_col_docx:
+        if docx_bytes:
+            if st.button("Save DOCX to disk", key="save_docx_disk", use_container_width=True):
+                try:
+                    saved_path = save_resume_to_disk(docx_bytes, output_dir, filename_docx)
+                    result["saved_paths"]["docx"] = str(saved_path)
+                    st.success(f"Saved to `{saved_path}`")
+                except OSError as exc:
+                    st.error(f"Could not save DOCX: {exc}")
+
+            st.download_button(
+                label="Download DOCX",
+                data=docx_bytes,
+                file_name=filename_docx,
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                type="primary",
+                use_container_width=True,
+            )
+            saved_docx = result.get("saved_paths", {}).get("docx")
+            if saved_docx:
+                st.caption(f"On disk: `{saved_docx}`")
+
+    with save_col_pdf:
+        if pdf_bytes:
+            if st.button("Save PDF to disk", key="save_pdf_disk", use_container_width=True):
+                try:
+                    saved_path = save_resume_to_disk(pdf_bytes, output_dir, filename_pdf)
+                    result["saved_paths"]["pdf"] = str(saved_path)
+                    st.success(f"Saved to `{saved_path}`")
+                except OSError as exc:
+                    st.error(f"Could not save PDF: {exc}")
+
+            st.download_button(
+                label="Download PDF",
+                data=pdf_bytes,
+                file_name=filename_pdf,
+                mime="application/pdf",
+                type="primary",
+                use_container_width=True,
+            )
+            saved_pdf = result.get("saved_paths", {}).get("pdf")
+            if saved_pdf:
+                st.caption(f"On disk: `{saved_pdf}`")
+        else:
+            st.button(
+                "Download PDF",
+                disabled=True,
+                use_container_width=True,
+                help="Install LibreOffice for PDF export",
+            )
+            st.caption(
+                "PDF export requires LibreOffice (`sudo apt install libreoffice-writer`)."
+            )
 
 
 config = load_config()
@@ -41,6 +180,7 @@ endpoint_url = config.get("endpoint_url", "")
 api_key = config.get("api_key", "ollama")
 default_model = config.get("model_name", "")
 max_chars = config.get("ai_output_max_chars", DEFAULT_AI_OUTPUT_MAX_CHARS)
+max_pages = int(config.get("max_resume_pages", 2))
 models = model_options(config)
 if default_model and default_model not in models:
     models = [default_model, *models]
@@ -50,8 +190,8 @@ elif not models and default_model:
 st.set_page_config(page_title="Resume Tailor", layout="wide")
 st.title("Resume Tailor")
 st.caption(
-    "Generate tailored summary and skills from a job description, review and edit, "
-    "then build and download a formatted DOCX."
+    "Generate a tailored resume from a job description, preview it, revise summary or "
+    "skills via chat, then save as DOCX or PDF."
 )
 
 example_background_path = ROOT / "background.example.md"
@@ -80,6 +220,15 @@ with st.sidebar:
     selected_model = st.selectbox("Model", models, index=model_index)
     st.text_input("API endpoint", value=endpoint_url or "(set OPENAI_BASE_URL in .env)", disabled=True)
     generate = st.button("Generate tailored content", type="primary", use_container_width=True)
+
+    st.divider()
+    if libreoffice_available():
+        st.caption("PDF preview and export available (LibreOffice detected).")
+    else:
+        st.caption(
+            "PDF preview requires LibreOffice (`sudo apt install libreoffice-writer`). "
+            "DOCX export always works."
+        )
 
 if not background_ok:
     st.stop()
@@ -110,15 +259,19 @@ if generate:
                     api_key=api_key,
                     ai_output_max_chars=max_chars,
                 )
-                st.session_state.review_nonce += 1
-                st.session_state.result = {
-                    "summary": ai_output["summary"],
-                    "skills": ai_output["skills"],
-                    "skill_warnings": skill_warnings,
-                    "docx_bytes": None,
-                    "saved_path": None,
-                    "filename": None,
-                }
+                with st.spinner("Building resume preview..."):
+                    st.session_state.review_nonce += 1
+                    result = apply_artifacts_to_result(
+                        {},
+                        background_data,
+                        ai_output,
+                        skill_warnings=skill_warnings,
+                        max_pages=max_pages,
+                        max_chars=max_chars,
+                    )
+                    result["job_description"] = job_description.strip()
+                    result["revision_history"] = []
+                    st.session_state.result = result
             except AIResponseError as exc:
                 st.error(str(exc))
             except ValueError as exc:
@@ -126,100 +279,137 @@ if generate:
 
 result = st.session_state.result
 
+if result is not None and "skill_categories" not in result and result.get("skills"):
+    result["skill_categories"] = [{"name": "Skills", "skills": result["skills"]}]
+
 if result is None:
     st.info(
         "Paste a job description in the sidebar and click **Generate tailored content**. "
-        "Review and edit the summary and skills, check the character counts, then click "
-        "**Build DOCX** to create your resume."
+        "You'll see a resume preview immediately. Use the chat to revise summary or skills, "
+        "then save as DOCX or PDF."
     )
 else:
     if result.get("skill_warnings"):
         st.warning(
-            "Some skills were not found verbatim in your background file: "
+            "Skills removed because they were not found in your background file: "
             + ", ".join(result["skill_warnings"])
         )
 
-    nonce = st.session_state.review_nonce
-    st.subheader("Review tailored content")
+    left_col, right_col = st.columns([2, 3], gap="large")
 
-    summary = st.text_area(
-        "Professional Summary",
-        value=result["summary"],
-        height=140,
-        key=f"edit_summary_{nonce}",
-    )
-    skills_text = st.text_area(
-        "Skills (one per line)",
-        value="\n".join(result["skills"]),
-        height=200,
-        key=f"edit_skills_{nonce}",
-    )
-    skills = parse_skills(skills_text)
-    summary_stripped = summary.strip()
-    summary_chars = len(summary_stripped)
-    summary_words = len(summary_stripped.split()) if summary_stripped else 0
-    skills_chars = sum(len(skill) for skill in skills)
-    total_chars = ai_output_char_count(summary_stripped, skills)
+    with left_col:
+        st.subheader("Revise")
+        for message in result.get("revision_history", []):
+            with st.chat_message(message["role"]):
+                st.markdown(message["content"])
 
-    st.subheader("Character budget")
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Summary characters", summary_chars)
-    m2.metric("Summary words", summary_words)
-    m3.metric("Skills", f"{len(skills)} ({skills_chars} chars)")
-    m4.metric("Total characters", f"{total_chars} / {max_chars}")
-
-    if total_chars > max_chars:
-        st.warning(
-            f"Total characters ({total_chars}) exceed the page budget ({max_chars}). "
-            "Extra text may spill onto an additional page. Trim the summary or skills "
-            "if you want a tighter layout."
+        revision_prompt = st.chat_input(
+            "Ask for changes to the summary or skills...",
+            key="revision_chat_input",
         )
-    else:
-        st.caption("Within page budget.")
-
-    build_docx = st.button("Build DOCX", type="primary")
-    if build_docx:
-        if not summary_stripped:
-            st.error("Professional summary cannot be empty.")
-        elif not skills:
-            st.error("Add at least one skill (one per line).")
-        else:
-            try:
-                ai_output = {"summary": summary_stripped, "skills": skills}
-                docx_bytes = build_resume(background_data, ai_output)
-                filename = resume_filename(background_data["header"]["name"])
-                saved_path = None
+        if revision_prompt:
+            with st.spinner("Revising summary and skills..."):
                 try:
-                    saved_path = save_resume_to_disk(
-                        docx_bytes,
-                        output_dir,
-                        filename,
+                    current_output = {
+                        "summary": result["summary"],
+                        "skill_categories": result.get("skill_categories", []),
+                    }
+                    ai_output, skill_warnings = revise_tailored_content(
+                        result.get("job_description", job_description),
+                        current_output,
+                        revision_prompt,
+                        background_path,
+                        endpoint_url=endpoint_url,
+                        model_name=selected_model,
+                        api_key=api_key,
+                        ai_output_max_chars=max_chars,
+                        revision_history=result.get("revision_history"),
                     )
-                except OSError as exc:
-                    st.warning(f"Could not save to disk: {exc}")
+                    with st.spinner("Updating resume preview..."):
+                        history = list(result.get("revision_history", []))
+                        history.append({"role": "user", "content": revision_prompt})
+                        history.append(
+                            {
+                                "role": "assistant",
+                                "content": (
+                                    "Updated the summary and skills. "
+                                    "Check the preview on the right."
+                                ),
+                            }
+                        )
+                        apply_artifacts_to_result(
+                            result,
+                            background_data,
+                            ai_output,
+                            skill_warnings=skill_warnings,
+                            max_pages=max_pages,
+                            max_chars=max_chars,
+                        )
+                        result["revision_history"] = history
+                        st.session_state.review_nonce += 1
+                        st.rerun()
+                except AIResponseError as exc:
+                    st.error(str(exc))
+                except ValueError as exc:
+                    st.error(str(exc))
 
-                st.session_state.result["docx_bytes"] = docx_bytes
-                st.session_state.result["filename"] = filename
-                st.session_state.result["saved_path"] = (
-                    str(saved_path) if saved_path else None
-                )
-                st.rerun()
-            except ValueError as exc:
-                st.error(str(exc))
+        with st.expander("Advanced edit"):
+            nonce = st.session_state.review_nonce
+            skill_categories = result.get("skill_categories", [])
+            manual_summary = st.text_area(
+                "Professional Summary",
+                value=result["summary"],
+                height=120,
+                key=f"edit_summary_{nonce}",
+            )
+            manual_skills_text = st.text_area(
+                "Skills (Category: skill1, skill2 — one category per line)",
+                value=format_skill_categories(skill_categories),
+                height=160,
+                key=f"edit_skills_{nonce}",
+            )
+            if st.button("Apply changes", key="apply_manual_edit"):
+                manual_categories = parse_skill_categories(manual_skills_text)
+                if not manual_summary.strip():
+                    st.error("Professional summary cannot be empty.")
+                elif not manual_categories:
+                    st.error("Add at least one skill category (e.g. Languages: Python, Go).")
+                else:
+                    background_text = read_background_text(background_path)
+                    filtered, dropped = filter_skill_categories(manual_categories, background_text)
+                    if dropped:
+                        st.error(
+                            "Skills not found in your background file: "
+                            + ", ".join(dropped)
+                        )
+                    elif not filtered:
+                        st.error("No valid skills remain after background check.")
+                    else:
+                        with st.spinner("Updating resume preview..."):
+                            apply_artifacts_to_result(
+                                result,
+                                background_data,
+                                {
+                                    "summary": manual_summary,
+                                    "skill_categories": filtered,
+                                },
+                                max_pages=max_pages,
+                                max_chars=max_chars,
+                            )
+                            st.session_state.review_nonce += 1
+                            st.rerun()
 
-    if result.get("docx_bytes"):
-        download_name = result.get("filename") or "resume.docx"
-        st.success(f"DOCX ready: {download_name}")
-        st.download_button(
-            label="Download DOCX",
-            data=result["docx_bytes"],
-            file_name=download_name,
-            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            type="primary",
-        )
-        if result.get("saved_path"):
-            st.caption(f"Also saved to: `{result['saved_path']}`")
-        st.caption(
-            "If you edited the summary or skills above, click **Build DOCX** again "
-            "before downloading."
-        )
+        render_save_section(result, output_dir)
+
+    with right_col:
+        st.subheader("Resume preview")
+        render_page_indicator(result.get("page_count"), max_pages)
+
+        pdf_bytes = result.get("pdf_bytes")
+        if pdf_bytes:
+            st.pdf(pdf_bytes, height=900)
+        elif result.get("html"):
+            st.caption("Showing HTML fallback — install LibreOffice for PDF-accurate preview.")
+            components.html(result["html"], height=900, scrolling=True)
+        else:
+            st.info("Preview will appear after generation.")

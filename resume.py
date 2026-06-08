@@ -4,10 +4,18 @@ from __future__ import annotations
 
 import io
 import re
+import shutil
+import subprocess
+import tempfile
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+import mammoth
+from pypdf import PdfReader
+
 import frontmatter
+from ai import enforce_output_budget, normalize_ai_output
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.opc.constants import RELATIONSHIP_TYPE as RT
@@ -93,14 +101,9 @@ def validate_background(metadata: dict[str, Any]) -> dict[str, Any]:
 
 def build_resume(data: dict[str, Any], ai_output: dict[str, Any]) -> bytes:
     """Merge structured background + AI fields, return DOCX bytes."""
-    summary = ai_output.get("summary", "").strip()
-    skills = ai_output.get("skills", [])
-    if not summary:
-        raise ValueError("AI output missing non-empty 'summary'")
-    if not isinstance(skills, list) or not skills:
-        raise ValueError("AI output missing non-empty 'skills' list")
-    if not all(isinstance(s, str) and s.strip() for s in skills):
-        raise ValueError("AI output 'skills' must be a list of non-empty strings")
+    normalized = normalize_ai_output(ai_output)
+    summary = normalized["summary"]
+    skill_categories = normalized["skill_categories"]
 
     doc = Document()
     _set_document_margins(doc)
@@ -110,7 +113,7 @@ def build_resume(data: dict[str, Any], ai_output: dict[str, Any]) -> bytes:
     _add_section_heading(doc, "Professional Summary")
     _add_body_paragraph(doc, summary)
     _add_section_heading(doc, "Skills")
-    _add_skills(doc, skills)
+    _add_skill_categories(doc, skill_categories)
 
     experience = data.get("experience", [])
     if experience:
@@ -124,17 +127,17 @@ def build_resume(data: dict[str, Any], ai_output: dict[str, Any]) -> bytes:
         for entry in education:
             _add_education_entry(doc, entry)
 
-    certifications = data.get("certifications", [])
-    if certifications:
-        _add_section_heading(doc, "Certifications")
-        for cert in certifications:
-            _add_certification_entry(doc, cert)
-
     projects = data.get("projects", [])
     if projects:
         _add_section_heading(doc, "Projects")
         for project in projects:
             _add_project_entry(doc, project)
+
+    certifications = data.get("certifications", [])
+    if certifications:
+        _add_section_heading(doc, "Certifications")
+        for cert in certifications:
+            _add_certification_entry(doc, cert)
 
     buffer = io.BytesIO()
     doc.save(buffer)
@@ -280,58 +283,22 @@ def _add_header(doc: Document, header: dict[str, Any]) -> None:
             _add_hyperlink(links_p, url, label)
 
 
-def _chunk_skills(skills: list[str], size: int = 4) -> list[list[str]]:
-    return [skills[i : i + size] for i in range(0, len(skills), size)]
-
-
-def format_skill_groups(skills: list[str], size: int = 4) -> list[str]:
-    """Return comma-joined skill groups for preview or DOCX bullets."""
-    return [", ".join(group) for group in _chunk_skills(skills, size)]
-
-
-def _add_skills(doc: Document, skills: list[str]) -> None:
-    """Render skills in two columns via tab stops (avoids visible table gridlines)."""
-    if not skills:
+def _add_skill_categories(doc: Document, skill_categories: list[dict[str, Any]]) -> None:
+    """Render one bullet per skill category with comma-joined skills."""
+    if not skill_categories:
         return
 
-    padded = list(skills)
-    if len(padded) % 2 != 0:
-        padded.append("")
-
-    mid = len(padded) // 2
-    col_a = padded[:mid]
-    col_b = padded[mid:]
-
-    # Center of body text on letter paper: 0.65" margin + 3.6" half-width = 6120 twips
-    col_tab_pos = "6120"
-
-    for a, b in zip(col_a, col_b):
+    for cat in skill_categories:
+        skills_text = ", ".join(cat["skills"])
         p = doc.add_paragraph()
         p.paragraph_format.space_after = Pt(2)
         p.paragraph_format.left_indent = Inches(0.05)
-
-        if a and b:
-            p_pr = p._p.get_or_add_pPr()
-            tabs = OxmlElement("w:tabs")
-            tab = OxmlElement("w:tab")
-            tab.set(qn("w:val"), "left")
-            tab.set(qn("w:pos"), col_tab_pos)
-            tabs.append(tab)
-            p_pr.append(tabs)
-
-        if a:
-            bullet_run = p.add_run("▪  ")
-            _format_run(bullet_run, color=ACCENT_COLOR)
-            text_run = p.add_run(a)
-            _format_run(text_run)
-
-        if b:
-            if a:
-                p.add_run("\t")
-            bullet_run = p.add_run("▪  ")
-            _format_run(bullet_run, color=ACCENT_COLOR)
-            text_run = p.add_run(b)
-            _format_run(text_run)
+        bullet_run = p.add_run("▪  ")
+        _format_run(bullet_run, color=ACCENT_COLOR)
+        name_run = p.add_run(f"{cat['name']}: ")
+        _format_run(name_run, bold=True)
+        text_run = p.add_run(skills_text)
+        _format_run(text_run)
 
     doc.add_paragraph().paragraph_format.space_after = Pt(2)
 
@@ -360,6 +327,12 @@ def _add_experience_entry(doc: Document, job: dict[str, Any]) -> None:
     company_run = title_line.add_run(job["company"])
     _format_run(company_run, color=META_COLOR)
 
+    if job.get("location"):
+        loc_sep = title_line.add_run("  ·  ")
+        _format_run(loc_sep, color=META_COLOR)
+        loc_run = title_line.add_run(job["location"])
+        _format_run(loc_run, color=META_COLOR, size=Pt(9.5))
+
     tab_run = title_line.add_run("\t" + _format_date_range(job["start"], job["end"]))
     _format_run(tab_run, color=META_COLOR, size=Pt(9.5))
 
@@ -370,12 +343,6 @@ def _add_experience_entry(doc: Document, job: dict[str, Any]) -> None:
     tab.set(qn("w:pos"), "9072")
     tabs.append(tab)
     p_pr.append(tabs)
-
-    if job.get("location"):
-        meta_p = doc.add_paragraph()
-        meta_p.paragraph_format.space_after = Pt(2)
-        meta_run = meta_p.add_run(job["location"])
-        _format_run(meta_run, size=Pt(9.5), color=META_COLOR)
 
     for bullet in job["bullets"]:
         _add_bullet(doc, bullet)
@@ -449,18 +416,179 @@ def _add_bullet(doc: Document, text: str) -> None:
     _format_run(text_run)
 
 
-def resume_filename(candidate_name: str) -> str:
-    """Build a stable DOCX filename from the candidate name in background.md."""
+PREVIEW_HTML_STYLE = """
+<style>
+  html, body {
+    background: #ffffff;
+    font-family: Calibri, "Segoe UI", sans-serif;
+    font-size: 10pt;
+    line-height: 1.35;
+    color: #222;
+    max-width: 8.5in;
+    margin: 0 auto;
+    padding: 0.55in 0.65in;
+  }
+  p { margin: 0.25em 0; }
+  a { color: #1A568C; }
+  strong { color: #1A568C; }
+</style>
+"""
+
+
+def resume_filename(candidate_name: str, ext: str = "docx") -> str:
+    """Build a stable resume filename from the candidate name in background.md."""
     safe = re.sub(r"[^\w\-]+", "_", candidate_name.strip()).strip("_")
-    return f"{safe}_Resume.docx" if safe else "resume.docx"
+    normalized_ext = ext.lstrip(".") or "docx"
+    base = f"{safe}_Resume" if safe else "resume"
+    return f"{base}.{normalized_ext}"
 
 
-def save_resume_to_disk(docx_bytes: bytes, output_dir: Path, filename: str) -> Path:
-    """Write DOCX bytes to output_dir, overwriting any existing file with the same name."""
+def save_resume_to_disk(file_bytes: bytes, output_dir: Path, filename: str) -> Path:
+    """Write resume bytes to output_dir, overwriting any existing file with the same name."""
     output_dir.mkdir(parents=True, exist_ok=True)
     safe_name = Path(filename).name
     if not safe_name or safe_name in (".", ".."):
         safe_name = "resume.docx"
     path = output_dir / safe_name
-    path.write_bytes(docx_bytes)
+    path.write_bytes(file_bytes)
     return path
+
+
+@lru_cache(maxsize=1)
+def libreoffice_available() -> bool:
+    """Return True when LibreOffice headless conversion is available."""
+    return shutil.which("soffice") is not None
+
+
+def docx_to_html(docx_bytes: bytes) -> str:
+    """Convert DOCX bytes to styled HTML for in-app preview."""
+    result = mammoth.convert_to_html(io.BytesIO(docx_bytes))
+    body = result.value
+    return f"<!DOCTYPE html><html><head>{PREVIEW_HTML_STYLE}</head><body>{body}</body></html>"
+
+
+def docx_to_pdf(docx_bytes: bytes) -> bytes | None:
+    """Convert DOCX bytes to PDF via LibreOffice headless, or None if unavailable."""
+    if not libreoffice_available():
+        return None
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir)
+        docx_path = tmp_path / "resume.docx"
+        docx_path.write_bytes(docx_bytes)
+        try:
+            subprocess.run(
+                [
+                    "soffice",
+                    "--headless",
+                    "--convert-to",
+                    "pdf",
+                    "--outdir",
+                    str(tmp_path),
+                    str(docx_path),
+                ],
+                check=True,
+                capture_output=True,
+                timeout=120,
+            )
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
+            return None
+
+        pdf_path = tmp_path / "resume.pdf"
+        if not pdf_path.exists():
+            return None
+        return pdf_path.read_bytes()
+
+
+def pdf_page_count(pdf_bytes: bytes) -> int:
+    """Return the number of pages in a PDF."""
+    return len(PdfReader(io.BytesIO(pdf_bytes)).pages)
+
+
+def trim_ai_output_one_step(ai_output: dict[str, Any]) -> dict[str, Any]:
+    """Remove one unit of content to reduce rendered page count."""
+    normalized = normalize_ai_output(ai_output)
+    summary = normalized["summary"]
+    categories = [
+        {"name": cat["name"], "skills": list(cat["skills"])}
+        for cat in normalized["skill_categories"]
+    ]
+
+    if categories and categories[-1]["skills"]:
+        categories[-1]["skills"].pop()
+        if not categories[-1]["skills"]:
+            categories.pop()
+        return {"summary": summary, "skill_categories": categories}
+
+    sentences = re.split(r"(?<=[.!?])\s+", summary)
+    if len(sentences) > 1:
+        sentences.pop()
+        return {"summary": " ".join(sentences).strip(), "skill_categories": categories}
+
+    return normalized
+
+
+def fit_resume_to_page_budget(
+    background_data: dict[str, Any],
+    ai_output: dict[str, Any],
+    *,
+    max_pages: int = 2,
+    max_chars: int | None = None,
+) -> tuple[dict[str, Any], bytes, bytes | None, int | None]:
+    """
+    Trim AI output until the rendered PDF fits max_pages.
+
+    Returns (fitted_ai_output, docx_bytes, pdf_bytes, page_count).
+    page_count is None when LibreOffice is unavailable.
+    """
+    current = normalize_ai_output(ai_output)
+    if max_chars is not None:
+        current = enforce_output_budget(
+            current["summary"],
+            current["skill_categories"],
+            max_chars,
+        )
+
+    docx_bytes = build_resume(background_data, current)
+    pdf_bytes = docx_to_pdf(docx_bytes)
+    if pdf_bytes is None:
+        return current, docx_bytes, None, None
+
+    page_count = pdf_page_count(pdf_bytes)
+    for _ in range(30):
+        if page_count <= max_pages:
+            break
+        trimmed = trim_ai_output_one_step(current)
+        if trimmed == current:
+            break
+        current = trimmed
+        docx_bytes = build_resume(background_data, current)
+        pdf_bytes = docx_to_pdf(docx_bytes)
+        if pdf_bytes is None:
+            break
+        page_count = pdf_page_count(pdf_bytes)
+
+    return current, docx_bytes, pdf_bytes, page_count
+
+
+def build_resume_artifacts(
+    background_data: dict[str, Any],
+    ai_output: dict[str, Any],
+    *,
+    max_pages: int = 2,
+    max_chars: int | None = None,
+) -> dict[str, Any]:
+    """Build DOCX and derived preview/export artifacts from background + AI output."""
+    fitted_output, docx_bytes, pdf_bytes, page_count = fit_resume_to_page_budget(
+        background_data,
+        ai_output,
+        max_pages=max_pages,
+        max_chars=max_chars,
+    )
+    return {
+        "ai_output": fitted_output,
+        "docx_bytes": docx_bytes,
+        "html": docx_to_html(docx_bytes),
+        "pdf_bytes": pdf_bytes,
+        "page_count": page_count,
+    }

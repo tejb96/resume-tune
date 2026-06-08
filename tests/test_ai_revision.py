@@ -1,0 +1,209 @@
+"""Tests for AI revision helpers."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from ai import (
+    AIResponseError,
+    filter_skill_categories,
+    format_revision_user_message,
+    format_skill_categories,
+    parse_skill_categories,
+    parse_response,
+    revise_tailored_content,
+)
+
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def test_format_revision_user_message_includes_feedback() -> None:
+    categories = [
+        {"name": "Languages", "skills": ["Python", "Go"]},
+    ]
+    message = format_revision_user_message(
+        job_description="Backend role",
+        summary="Current summary.",
+        skill_categories=categories,
+        feedback="Make skills more backend-focused.",
+    )
+
+    assert "Backend role" in message
+    assert "Current summary." in message
+    assert "Languages: Python, Go" in message
+    assert "Make skills more backend-focused." in message
+
+
+def test_parse_skill_categories_round_trip() -> None:
+    text = "Languages: Python, Go\nCloud: AWS, Docker"
+    parsed = parse_skill_categories(text)
+    assert parsed == [
+        {"name": "Languages", "skills": ["Python", "Go"]},
+        {"name": "Cloud", "skills": ["AWS", "Docker"]},
+    ]
+    assert format_skill_categories(parsed) == text
+
+
+def test_parse_response_accepts_skill_categories() -> None:
+    payload = {
+        "summary": "Backend engineer.",
+        "skill_categories": [
+            {"name": "Languages", "skills": ["Python", "Go"]},
+        ],
+    }
+    parsed = parse_response(json.dumps(payload))
+    assert parsed["summary"] == "Backend engineer."
+    assert parsed["skill_categories"][0]["name"] == "Languages"
+
+
+def test_parse_response_migrates_legacy_skills() -> None:
+    payload = {"summary": "Engineer.", "skills": ["Python", "Go"]}
+    parsed = parse_response(json.dumps(payload))
+    assert parsed["skill_categories"] == [{"name": "Skills", "skills": ["Python", "Go"]}]
+
+
+def test_filter_skill_categories_drops_unknown() -> None:
+    categories = [
+        {"name": "Testing", "skills": ["Jest", "Python"]},
+    ]
+    background = "Technologies: Python, Go, AWS"
+    filtered, dropped = filter_skill_categories(categories, background)
+    assert dropped == ["Jest"]
+    assert filtered == [{"name": "Testing", "skills": ["Python"]}]
+
+
+def test_revise_tailored_content_calls_model_and_returns_json() -> None:
+    background_path = ROOT / "background.example.md"
+    current_output = {
+        "summary": "Engineer with Python experience.",
+        "skill_categories": [{"name": "Languages", "skills": ["Python", "Go"]}],
+    }
+    revised = {
+        "summary": "Backend engineer focused on Python APIs.",
+        "skill_categories": [
+            {"name": "Languages", "skills": ["Python", "Go"]},
+            {"name": "Data", "skills": ["PostgreSQL"]},
+        ],
+    }
+
+    mock_choice = MagicMock()
+    mock_choice.finish_reason = "stop"
+    mock_choice.message.content = json.dumps(revised)
+
+    mock_response = MagicMock()
+    mock_response.choices = [mock_choice]
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.return_value = mock_response
+
+    with patch("ai.OpenAI", return_value=mock_client):
+        result, warnings = revise_tailored_content(
+            "Backend engineer role",
+            current_output,
+            "Focus on backend Python work.",
+            background_path,
+            endpoint_url="http://localhost:13305/api/v1",
+            model_name="test-model",
+        )
+
+    assert result["summary"] == revised["summary"]
+    assert result["skill_categories"] == revised["skill_categories"]
+    assert isinstance(warnings, list)
+    mock_client.chat.completions.create.assert_called_once()
+
+
+def test_revise_tailored_content_requires_feedback() -> None:
+    background_path = ROOT / "background.example.md"
+    current_output = {
+        "summary": "Summary.",
+        "skill_categories": [{"name": "Languages", "skills": ["Python"]}],
+    }
+
+    with pytest.raises(ValueError, match="Revision feedback cannot be empty"):
+        revise_tailored_content(
+            "Job description",
+            current_output,
+            "   ",
+            background_path,
+            endpoint_url="http://localhost:13305/api/v1",
+            model_name="test-model",
+        )
+
+
+def test_revise_tailored_content_retries_on_invalid_json() -> None:
+    background_path = ROOT / "background.example.md"
+    current_output = {
+        "summary": "Summary.",
+        "skill_categories": [{"name": "Languages", "skills": ["Python"]}],
+    }
+    revised = {
+        "summary": "Better summary.",
+        "skill_categories": [{"name": "Languages", "skills": ["Python", "Go"]}],
+    }
+
+    bad_choice = MagicMock()
+    bad_choice.finish_reason = "stop"
+    bad_choice.message.content = "not json"
+
+    good_choice = MagicMock()
+    good_choice.finish_reason = "stop"
+    good_choice.message.content = json.dumps(revised)
+
+    mock_response_bad = MagicMock()
+    mock_response_bad.choices = [bad_choice]
+    mock_response_good = MagicMock()
+    mock_response_good.choices = [good_choice]
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.side_effect = [
+        mock_response_bad,
+        mock_response_good,
+    ]
+
+    with patch("ai.OpenAI", return_value=mock_client):
+        result, _warnings = revise_tailored_content(
+            "Job description",
+            current_output,
+            "Improve the summary.",
+            background_path,
+            endpoint_url="http://localhost:13305/api/v1",
+            model_name="test-model",
+        )
+
+    assert result == revised
+    assert mock_client.chat.completions.create.call_count == 2
+
+
+def test_revise_tailored_content_raises_after_invalid_json_exhausted() -> None:
+    background_path = ROOT / "background.example.md"
+    current_output = {
+        "summary": "Summary.",
+        "skill_categories": [{"name": "Languages", "skills": ["Python"]}],
+    }
+
+    bad_choice = MagicMock()
+    bad_choice.finish_reason = "stop"
+    bad_choice.message.content = "not json"
+
+    mock_response = MagicMock()
+    mock_response.choices = [bad_choice]
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.return_value = mock_response
+
+    with patch("ai.OpenAI", return_value=mock_client):
+        with pytest.raises(AIResponseError):
+            revise_tailored_content(
+                "Job description",
+                current_output,
+                "Improve the summary.",
+                background_path,
+                endpoint_url="http://localhost:13305/api/v1",
+                model_name="test-model",
+            )
+
+    assert mock_client.chat.completions.create.call_count == 3

@@ -1,12 +1,13 @@
 # Resume Tune
 
-Local desktop-style resume generator: paste a job description, tailor summary and skills with a local OpenAI-compatible LLM (Lemonade, Ollama, etc.), and download a formatted DOCX.
+Local desktop-style resume generator: paste a job description, tailor summary and skills with a local OpenAI-compatible LLM (Lemonade, Ollama, etc.), preview the full resume, revise via chat, and save as DOCX or PDF.
 
 ## Requirements
 
 - Python 3.13+
 - [uv](https://docs.astral.sh/uv/)
 - A running OpenAI-compatible local API (e.g. [Lemonade](https://lemonade-server.ai/) or [Ollama](https://ollama.com/))
+- Optional: [LibreOffice](https://www.libreoffice.org/) for PDF export (`sudo apt install libreoffice-writer`)
 
 ## Setup
 
@@ -24,6 +25,15 @@ Edit `.env` with your API endpoint, key, and model. For Lemonade, check your por
 uv run streamlit run app.py
 ```
 
+## Workflow
+
+1. Paste a job description in the sidebar and click **Generate tailored content**.
+2. The app builds a DOCX immediately and shows an HTML preview on the right.
+3. Use the chat on the left to request changes (e.g. *"Shorten the skills list"* or *"Emphasize Kubernetes experience"*). Each revision auto-updates the preview.
+4. When satisfied, **Download DOCX** (always available) or **Download PDF** (when LibreOffice is installed). Files can also be saved to `./output`.
+
+Advanced manual editing is available in a collapsed expander if you want to tweak summary or skills directly.
+
 ## Docker (app only)
 
 Runs Streamlit only; point it at an LLM server on the host (or elsewhere) via `.env`:
@@ -37,7 +47,8 @@ docker compose up --build
 ```
 
 - App: http://localhost:8501
-- Create `background.md` locally (`cp background.example.md background.md`) before starting; it is bind-mounted read-only. Generated DOCX files land in `./output`
+- Create `background.md` locally (`cp background.example.md background.md`) before starting; it is bind-mounted read-only. Generated files land in `./output`
+- PDF export is not available in the Docker image unless you install LibreOffice in the container; DOCX export always works.
 
 ## Environment variables
 
@@ -53,18 +64,19 @@ docker compose up --build
 ## Dev checks
 
 ```bash
-uv run python scripts/smoke_test.py          # DOCX from fixtures (no LLM)
+uv run python scripts/smoke_test.py          # DOCX + HTML preview from fixtures (no LLM)
 uv run python scripts/e2e_live.py            # full pipeline if API is up
+uv run pytest                                # unit tests (optional: uv sync --extra dev)
 ```
 
 ## Project layout
 
 | File | Role |
 |------|------|
-| `app.py` | Streamlit UI |
-| `ai.py` | Local LLM call, JSON parse/validate |
+| `app.py` | Streamlit UI (preview, chat revision, save) |
+| `ai.py` | Local LLM call, JSON parse/validate, revision |
 | `settings.py` | `.env` + `config.toml` loader |
-| `resume.py` | python-docx formatter |
+| `resume.py` | python-docx formatter, HTML/PDF export |
 | `background.example.md` | Public resume template (frontmatter + AI context) |
 | `background.md` | Your private background (gitignored; copy from example) |
 | `config.toml` | Paths and model presets |
