@@ -41,6 +41,63 @@ CANDIDATE BACKGROUND:
 {background_text}
 """
 
+SKILLS_ONLY_SYSTEM_PROMPT_TEMPLATE = """You are a professional resume writer. Given the candidate background below and a job description, produce tailored categorized skills.
+
+RULES (strict):
+- Output ONLY valid JSON. No markdown code fences. No preamble. No explanation. No trailing text.
+- JSON schema: {{"skill_categories": [{{"name": "<category>", "skills": ["<skill>", ...]}}, ...]}}
+- TOTAL LENGTH (critical): Count every category "name" and every skill string. The combined total must be at most {max_chars} characters.
+- "skill_categories": 4-6 categories max. Each category has a short label (e.g. "Languages", "Backend", "Cloud & DevOps", "Databases") and 3-8 concise skills comma-joinable in one line. Order categories by relevance to the job description.
+- Skills must be evidenced in CANDIDATE BACKGROUND only. Do NOT invent skills. Do NOT add testing frameworks, tools, or technologies mentioned only in the job description unless they appear in CANDIDATE BACKGROUND.
+- Do not include any keys other than "skill_categories".
+
+CANDIDATE BACKGROUND:
+{background_text}
+"""
+
+SUMMARY_ONLY_SYSTEM_PROMPT_TEMPLATE = """You are a professional resume writer. Given the candidate background below and a job description, produce a tailored professional summary.
+
+RULES (strict):
+- Output ONLY valid JSON. No markdown code fences. No preamble. No explanation. No trailing text.
+- JSON schema: {{"summary": "<string>"}}
+- TOTAL LENGTH (critical): Count every character in "summary". The total must be at most {max_chars} characters.
+- "summary": 3-5 sentences, third person or implied first person, targeted to the job description. Use only facts from the background. Prefer tight phrasing over extra detail when near the limit.
+- Do not include any keys other than "summary".
+
+CANDIDATE BACKGROUND:
+{background_text}
+"""
+
+SKILLS_ONLY_REVISION_SYSTEM_PROMPT_TEMPLATE = """You are a professional resume writer revising a tailored categorized skills list based on user feedback.
+
+RULES (strict):
+- Output ONLY valid JSON. No markdown code fences. No preamble. No explanation. No trailing text.
+- JSON schema: {{"skill_categories": [{{"name": "<category>", "skills": ["<skill>", ...]}}, ...]}}
+- TOTAL LENGTH (critical): Count every category "name" and every skill string. The combined total must be at most {max_chars} characters.
+- Apply the user's revision request while keeping content targeted to the job description.
+- Use only facts from the background. Skills must be evidenced in CANDIDATE BACKGROUND only. Do NOT invent skills. Do NOT add skills from the job description unless they appear in CANDIDATE BACKGROUND.
+- Do not include any keys other than "skill_categories".
+
+CANDIDATE BACKGROUND:
+{background_text}
+"""
+
+SUMMARY_ONLY_REVISION_SYSTEM_PROMPT_TEMPLATE = """You are a professional resume writer revising a tailored professional summary based on user feedback.
+
+RULES (strict):
+- Output ONLY valid JSON. No markdown code fences. No preamble. No explanation. No trailing text.
+- JSON schema: {{"summary": "<string>"}}
+- TOTAL LENGTH (critical): Count every character in "summary". The total must be at most {max_chars} characters.
+- Apply the user's revision request while keeping content targeted to the job description.
+- Use only facts from the background.
+- Do not include any keys other than "summary".
+
+CANDIDATE BACKGROUND:
+{background_text}
+"""
+
+EMPTY_AI_OUTPUT: dict[str, Any] = {"summary": "", "skill_categories": []}
+
 
 class AIResponseError(Exception):
     """Raised when the model response cannot be parsed or validated."""
@@ -53,21 +110,41 @@ def read_background_text(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def normalize_ai_output(data: dict[str, Any]) -> dict[str, Any]:
+def normalize_ai_output(
+    data: dict[str, Any],
+    *,
+    include_summary: bool = True,
+    include_skills: bool = True,
+) -> dict[str, Any]:
     """Normalize AI output to skill_categories schema (migrate legacy flat skills)."""
+    if not include_summary and not include_skills:
+        return dict(EMPTY_AI_OUTPUT)
+
     summary = data.get("summary", "").strip()
-    if "skill_categories" in data:
-        categories = _validate_skill_categories(data["skill_categories"])
-        return {"summary": summary, "skill_categories": categories}
+    categories: list[dict[str, Any]] = []
 
-    skills = data.get("skills", [])
-    if isinstance(skills, list) and skills:
-        return {
-            "summary": summary,
-            "skill_categories": [{"name": "Skills", "skills": [s.strip() for s in skills if isinstance(s, str) and s.strip()]}],
-        }
+    if include_skills:
+        if "skill_categories" in data:
+            categories = _validate_skill_categories(data["skill_categories"])
+        else:
+            skills = data.get("skills", [])
+            if isinstance(skills, list) and skills:
+                categories = [
+                    {
+                        "name": "Skills",
+                        "skills": [s.strip() for s in skills if isinstance(s, str) and s.strip()],
+                    }
+                ]
+    else:
+        raw_categories = data.get("skill_categories", [])
+        categories = raw_categories if isinstance(raw_categories, list) else []
 
-    raise ValueError("AI output missing non-empty 'skill_categories' or 'skills'")
+    if include_summary and not summary:
+        raise ValueError("AI output missing non-empty 'summary'")
+    if include_skills and not categories:
+        raise ValueError("AI output missing non-empty 'skill_categories' or 'skills'")
+
+    return {"summary": summary, "skill_categories": categories}
 
 
 def _validate_skill_categories(categories: Any) -> list[dict[str, Any]]:
@@ -90,12 +167,21 @@ def _validate_skill_categories(categories: Any) -> list[dict[str, Any]]:
     return validated
 
 
-def ai_output_char_count(summary: str, skill_categories: list[dict[str, Any]]) -> int:
-    """Characters in summary plus category names and skill labels."""
-    total = len(summary.strip())
-    for cat in skill_categories:
-        total += len(cat["name"])
-        total += sum(len(skill) for skill in cat["skills"])
+def ai_output_char_count(
+    summary: str,
+    skill_categories: list[dict[str, Any]],
+    *,
+    include_summary: bool = True,
+    include_skills: bool = True,
+) -> int:
+    """Characters in included AI fields only."""
+    total = 0
+    if include_summary:
+        total += len(summary.strip())
+    if include_skills:
+        for cat in skill_categories:
+            total += len(cat["name"])
+            total += sum(len(skill) for skill in cat["skills"])
     return total
 
 
@@ -103,64 +189,119 @@ def enforce_output_budget(
     summary: str,
     skill_categories: list[dict[str, Any]],
     max_chars: int,
+    *,
+    include_summary: bool = True,
+    include_skills: bool = True,
 ) -> dict[str, Any]:
-    """Trim least-important skills/categories, then summary sentences, to fit the char budget."""
-    summary = summary.strip()
-    categories = [
-        {"name": cat["name"], "skills": list(cat["skills"])}
-        for cat in skill_categories
-    ]
+    """Trim least-important included content to fit the char budget."""
+    if not include_summary and not include_skills:
+        return dict(EMPTY_AI_OUTPUT)
 
-    while categories and ai_output_char_count(summary, categories) > max_chars:
-        last = categories[-1]
-        if last["skills"]:
-            last["skills"].pop()
-        if not last["skills"]:
-            categories.pop()
+    summary = summary.strip() if include_summary else ""
+    categories = (
+        [{"name": cat["name"], "skills": list(cat["skills"])} for cat in skill_categories]
+        if include_skills
+        else []
+    )
 
-    if ai_output_char_count(summary, categories) <= max_chars:
+    if include_skills:
+        while categories and ai_output_char_count(
+            summary,
+            categories,
+            include_summary=include_summary,
+            include_skills=True,
+        ) > max_chars:
+            last = categories[-1]
+            if last["skills"]:
+                last["skills"].pop()
+            if not last["skills"]:
+                categories.pop()
+
+    if (
+        ai_output_char_count(
+            summary,
+            categories,
+            include_summary=include_summary,
+            include_skills=include_skills,
+        )
+        <= max_chars
+    ):
         return {"summary": summary, "skill_categories": categories}
 
-    sentences = re.split(r"(?<=[.!?])\s+", summary)
-    while len(sentences) > 1 and ai_output_char_count(" ".join(sentences), categories) > max_chars:
-        sentences.pop()
-    summary = " ".join(sentences).strip()
+    if include_summary:
+        sentences = re.split(r"(?<=[.!?])\s+", summary)
+        while len(sentences) > 1 and ai_output_char_count(
+            " ".join(sentences),
+            categories,
+            include_summary=True,
+            include_skills=include_skills,
+        ) > max_chars:
+            sentences.pop()
+        summary = " ".join(sentences).strip()
 
-    if ai_output_char_count(summary, categories) > max_chars:
-        cat_chars = sum(
-            len(c["name"]) + sum(len(s) for s in c["skills"])
-            for c in categories
-        )
-        summary_room = max_chars - cat_chars
-        if summary_room > 0 and len(summary) > summary_room:
-            summary = summary[:summary_room].rsplit(" ", 1)[0].rstrip(".,;")
-            if summary and summary[-1] not in ".!?":
-                summary += "."
-        elif len(summary) > max_chars:
-            summary = summary[:max_chars].rsplit(" ", 1)[0].rstrip(".,;")
-            if summary and summary[-1] not in ".!?":
-                summary += "."
-            categories = []
+        if ai_output_char_count(
+            summary,
+            categories,
+            include_summary=True,
+            include_skills=include_skills,
+        ) > max_chars:
+            if include_skills:
+                cat_chars = sum(
+                    len(c["name"]) + sum(len(s) for s in c["skills"])
+                    for c in categories
+                )
+                summary_room = max_chars - cat_chars
+                if summary_room > 0 and len(summary) > summary_room:
+                    summary = summary[:summary_room].rsplit(" ", 1)[0].rstrip(".,;")
+                    if summary and summary[-1] not in ".!?":
+                        summary += "."
+                elif len(summary) > max_chars:
+                    summary = summary[:max_chars].rsplit(" ", 1)[0].rstrip(".,;")
+                    if summary and summary[-1] not in ".!?":
+                        summary += "."
+                    categories = []
+            elif len(summary) > max_chars:
+                summary = summary[:max_chars].rsplit(" ", 1)[0].rstrip(".,;")
+                if summary and summary[-1] not in ".!?":
+                    summary += "."
 
     return {"summary": summary, "skill_categories": categories}
 
 
-def build_system_prompt(background_text: str, *, max_chars: int = DEFAULT_AI_OUTPUT_MAX_CHARS) -> str:
-    return SYSTEM_PROMPT_TEMPLATE.format(
-        background_text=background_text,
-        max_chars=max_chars,
-    )
+def build_system_prompt(
+    background_text: str,
+    *,
+    max_chars: int = DEFAULT_AI_OUTPUT_MAX_CHARS,
+    include_summary: bool = True,
+    include_skills: bool = True,
+) -> str:
+    if include_summary and include_skills:
+        template = SYSTEM_PROMPT_TEMPLATE
+    elif include_skills:
+        template = SKILLS_ONLY_SYSTEM_PROMPT_TEMPLATE
+    elif include_summary:
+        template = SUMMARY_ONLY_SYSTEM_PROMPT_TEMPLATE
+    else:
+        raise ValueError("At least one AI section must be included to build a system prompt")
+    return template.format(background_text=background_text, max_chars=max_chars)
 
 
 def build_revision_system_prompt(
     background_text: str,
     *,
     max_chars: int = DEFAULT_AI_OUTPUT_MAX_CHARS,
+    include_summary: bool = True,
+    include_skills: bool = True,
 ) -> str:
-    return REVISION_SYSTEM_PROMPT_TEMPLATE.format(
-        background_text=background_text,
-        max_chars=max_chars,
-    )
+    if include_summary and include_skills:
+        template = REVISION_SYSTEM_PROMPT_TEMPLATE
+    elif include_skills:
+        template = SKILLS_ONLY_REVISION_SYSTEM_PROMPT_TEMPLATE
+    elif include_summary:
+        template = SUMMARY_ONLY_REVISION_SYSTEM_PROMPT_TEMPLATE
+    else:
+        raise ValueError("At least one AI section must be included to build a revision prompt")
+    return template.format(background_text=background_text, max_chars=max_chars)
 
 
 def format_skill_categories(skill_categories: list[dict[str, Any]]) -> str:
@@ -190,15 +331,18 @@ def format_revision_user_message(
     summary: str,
     skill_categories: list[dict[str, Any]],
     feedback: str,
+    include_summary: bool = True,
+    include_skills: bool = True,
 ) -> str:
-    skills_block = format_skill_categories(skill_categories)
-    return (
-        "Revise the professional summary and skills below based on the user's request.\n\n"
-        f"JOB DESCRIPTION:\n{job_description.strip()}\n\n"
-        f"CURRENT SUMMARY:\n{summary.strip()}\n\n"
-        f"CURRENT SKILLS:\n{skills_block}\n\n"
-        f"USER REQUEST:\n{feedback.strip()}"
-    )
+    parts = ["Revise the tailored resume content below based on the user's request.", ""]
+    parts.append(f"JOB DESCRIPTION:\n{job_description.strip()}")
+    if include_summary:
+        parts.extend(["", f"CURRENT SUMMARY:\n{summary.strip()}"])
+    if include_skills:
+        skills_block = format_skill_categories(skill_categories)
+        parts.extend(["", f"CURRENT SKILLS:\n{skills_block}"])
+    parts.extend(["", f"USER REQUEST:\n{feedback.strip()}"])
+    return "\n\n".join(parts)
 
 
 def strip_json_fences(text: str) -> str:
@@ -209,8 +353,13 @@ def strip_json_fences(text: str) -> str:
     return stripped.strip()
 
 
-def parse_response(raw: str) -> dict[str, Any]:
-    """Parse and validate model JSON response."""
+def parse_response(
+    raw: str,
+    *,
+    include_summary: bool = True,
+    include_skills: bool = True,
+) -> dict[str, Any]:
+    """Parse and validate model JSON response for the active AI sections."""
     cleaned = strip_json_fences(raw)
     try:
         data = json.loads(cleaned)
@@ -223,27 +372,46 @@ def parse_response(raw: str) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise AIResponseError("Model response must be a JSON object")
 
-    allowed_keys = {"summary", "skill_categories"}
-    legacy_keys = {"summary", "skills"}
-    if set(data.keys()) == legacy_keys:
-        return normalize_ai_output(data)
+    if include_summary and include_skills:
+        allowed_keys = {"summary", "skill_categories"}
+        legacy_keys = {"summary", "skills"}
+        if set(data.keys()) == legacy_keys:
+            return normalize_ai_output(data, include_summary=True, include_skills=True)
+        if set(data.keys()) != allowed_keys:
+            raise AIResponseError(
+                "Model response must contain only 'summary' and 'skill_categories', "
+                f"got keys: {sorted(data.keys())}"
+            )
+        summary = data["summary"]
+        if not isinstance(summary, str) or not summary.strip():
+            raise AIResponseError("'summary' must be a non-empty string")
+        try:
+            categories = _validate_skill_categories(data["skill_categories"])
+        except ValueError as exc:
+            raise AIResponseError(str(exc)) from exc
+        return {"summary": summary.strip(), "skill_categories": categories}
 
-    if set(data.keys()) != allowed_keys:
+    if include_skills:
+        if set(data.keys()) != {"skill_categories"}:
+            raise AIResponseError(
+                "Model response must contain only 'skill_categories', "
+                f"got keys: {sorted(data.keys())}"
+            )
+        try:
+            categories = _validate_skill_categories(data["skill_categories"])
+        except ValueError as exc:
+            raise AIResponseError(str(exc)) from exc
+        return {"summary": "", "skill_categories": categories}
+
+    if set(data.keys()) != {"summary"}:
         raise AIResponseError(
-            "Model response must contain only 'summary' and 'skill_categories', "
+            "Model response must contain only 'summary', "
             f"got keys: {sorted(data.keys())}"
         )
-
     summary = data["summary"]
     if not isinstance(summary, str) or not summary.strip():
         raise AIResponseError("'summary' must be a non-empty string")
-
-    try:
-        categories = _validate_skill_categories(data["skill_categories"])
-    except ValueError as exc:
-        raise AIResponseError(str(exc)) from exc
-
-    return {"summary": summary.strip(), "skill_categories": categories}
+    return {"summary": summary.strip(), "skill_categories": []}
 
 
 def log_ai_response(choice: Any) -> None:
@@ -288,14 +456,42 @@ def check_skills_against_background(
     return dropped
 
 
-def _shorten_output_message(char_count: int, max_chars: int) -> str:
+def _shorten_output_message(
+    char_count: int,
+    max_chars: int,
+    *,
+    include_summary: bool = True,
+    include_skills: bool = True,
+) -> str:
+    if include_summary and include_skills:
+        scope = "summary + category names + skill labels"
+        hint = "Use tighter summary phrasing and/or fewer, shorter skills per category."
+    elif include_skills:
+        scope = "category names + skill labels"
+        hint = "Use fewer categories and/or shorter skills per category."
+    else:
+        scope = "summary"
+        hint = "Use tighter summary phrasing."
     return (
-        f"Your previous JSON used {char_count} characters total "
-        f"(summary + category names + skill labels). Shorten it to at most {max_chars} "
-        "characters combined while keeping the most job-relevant facts. "
-        "Use tighter summary phrasing and/or fewer, shorter skills per category. "
-        "Reply again with ONLY the JSON object, no markdown fences."
+        f"Your previous JSON used {char_count} characters total ({scope}). "
+        f"Shorten it to at most {max_chars} characters combined while keeping the most "
+        f"job-relevant facts. {hint} Reply again with ONLY the JSON object, no markdown fences."
     )
+
+
+def _merge_parsed_with_preserved(
+    parsed: dict[str, Any],
+    preserved: dict[str, Any],
+    *,
+    include_summary: bool,
+    include_skills: bool,
+) -> dict[str, Any]:
+    return {
+        "summary": parsed["summary"] if include_summary else preserved.get("summary", ""),
+        "skill_categories": (
+            parsed["skill_categories"] if include_skills else preserved.get("skill_categories", [])
+        ),
+    }
 
 
 def _rejected_skills_message(rejected: list[str]) -> str:
@@ -315,8 +511,12 @@ def _call_with_retries(
     messages: list[dict[str, str]],
     background_text: str,
     ai_output_max_chars: int,
+    include_summary: bool = True,
+    include_skills: bool = True,
+    preserved_output: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
     """Call the model with JSON/budget/skill-grounding retries."""
+    preserved = preserved_output or dict(EMPTY_AI_OUTPUT)
     last_error: AIResponseError | None = None
     max_attempts = 3
     for attempt in range(max_attempts):
@@ -342,7 +542,11 @@ def _call_with_retries(
             raise AIResponseError("Model returned an empty response")
 
         try:
-            parsed = parse_response(choice.message.content)
+            parsed = parse_response(
+                choice.message.content,
+                include_summary=include_summary,
+                include_skills=include_skills,
+            )
         except AIResponseError as exc:
             last_error = exc
             if attempt < max_attempts - 1:
@@ -357,17 +561,32 @@ def _call_with_retries(
                 ]
             continue
 
-        filtered, dropped = filter_skill_categories(parsed["skill_categories"], background_text)
-        if not filtered:
-            last_error = AIResponseError("All skills were rejected as not evidenced in background")
-            if attempt < max_attempts - 1:
-                messages = messages + [
-                    {"role": "user", "content": _rejected_skills_message(dropped)},
-                ]
-            continue
+        dropped: list[str] = []
+        if include_skills:
+            filtered, dropped = filter_skill_categories(parsed["skill_categories"], background_text)
+            if not filtered:
+                last_error = AIResponseError(
+                    "All skills were rejected as not evidenced in background"
+                )
+                if attempt < max_attempts - 1:
+                    messages = messages + [
+                        {"role": "user", "content": _rejected_skills_message(dropped)},
+                    ]
+                continue
+            parsed = {"summary": parsed["summary"], "skill_categories": filtered}
 
-        parsed = {"summary": parsed["summary"], "skill_categories": filtered}
-        char_count = ai_output_char_count(parsed["summary"], parsed["skill_categories"])
+        parsed = _merge_parsed_with_preserved(
+            parsed,
+            preserved,
+            include_summary=include_summary,
+            include_skills=include_skills,
+        )
+        char_count = ai_output_char_count(
+            parsed["summary"],
+            parsed["skill_categories"],
+            include_summary=include_summary,
+            include_skills=include_skills,
+        )
         print(f"[ai] output chars: {char_count}/{ai_output_max_chars}")
 
         if dropped and attempt < max_attempts - 1:
@@ -384,7 +603,15 @@ def _call_with_retries(
         )
         if attempt < max_attempts - 1:
             messages = messages + [
-                {"role": "user", "content": _shorten_output_message(char_count, ai_output_max_chars)},
+                {
+                    "role": "user",
+                    "content": _shorten_output_message(
+                        char_count,
+                        ai_output_max_chars,
+                        include_summary=include_summary,
+                        include_skills=include_skills,
+                    ),
+                },
             ]
             continue
 
@@ -392,10 +619,13 @@ def _call_with_retries(
             parsed["summary"],
             parsed["skill_categories"],
             ai_output_max_chars,
+            include_summary=include_summary,
+            include_skills=include_skills,
         )
         print(
             "[ai] trimmed output chars: "
-            f"{ai_output_char_count(trimmed['summary'], trimmed['skill_categories'])}/{ai_output_max_chars}"
+            f"{ai_output_char_count(trimmed['summary'], trimmed['skill_categories'], include_summary=include_summary, include_skills=include_skills)}"
+            f"/{ai_output_max_chars}"
         )
         return trimmed, dropped
 
@@ -411,19 +641,29 @@ def generate_tailored_content(
     model_name: str,
     api_key: str = "ollama",
     ai_output_max_chars: int = DEFAULT_AI_OUTPUT_MAX_CHARS,
+    include_summary: bool = True,
+    include_skills: bool = True,
 ) -> tuple[dict[str, Any], list[str]]:
     """
     Call local LLM and return (parsed JSON, dropped skill warnings).
 
     Retries on JSON parse failure, hallucinated skills, and character budget overflow.
     """
+    if not include_summary and not include_skills:
+        return dict(EMPTY_AI_OUTPUT), []
+
     if not job_description.strip():
         raise ValueError("Job description cannot be empty")
     if ai_output_max_chars < 1:
         raise ValueError("ai_output_max_chars must be positive")
 
     background_text = read_background_text(background_path)
-    system_prompt = build_system_prompt(background_text, max_chars=ai_output_max_chars)
+    system_prompt = build_system_prompt(
+        background_text,
+        max_chars=ai_output_max_chars,
+        include_summary=include_summary,
+        include_skills=include_skills,
+    )
     client = OpenAI(base_url=endpoint_url, api_key=api_key)
     messages: list[dict[str, str]] = [
         {"role": "system", "content": system_prompt},
@@ -437,6 +677,8 @@ def generate_tailored_content(
             messages=messages,
             background_text=background_text,
             ai_output_max_chars=ai_output_max_chars,
+            include_summary=include_summary,
+            include_skills=include_skills,
         )
     except AIResponseError as exc:
         if "Cannot connect to local model API" in str(exc):
@@ -458,12 +700,16 @@ def revise_tailored_content(
     api_key: str = "ollama",
     ai_output_max_chars: int = DEFAULT_AI_OUTPUT_MAX_CHARS,
     revision_history: list[dict[str, str]] | None = None,
+    include_summary: bool = True,
+    include_skills: bool = True,
 ) -> tuple[dict[str, Any], list[str]]:
     """
     Revise summary/skills based on user feedback.
 
     revision_history holds prior chat turns as {"role": "user"|"assistant", "content": "..."}.
     """
+    if not include_summary and not include_skills:
+        raise ValueError("No AI sections are configured for revision")
     if not job_description.strip():
         raise ValueError("Job description cannot be empty")
     if not feedback.strip():
@@ -471,16 +717,25 @@ def revise_tailored_content(
     if ai_output_max_chars < 1:
         raise ValueError("ai_output_max_chars must be positive")
 
-    normalized = normalize_ai_output(current_output)
+    normalized = normalize_ai_output(
+        current_output,
+        include_summary=include_summary,
+        include_skills=include_skills,
+    )
     summary = normalized["summary"]
     skill_categories = normalized["skill_categories"]
-    if not summary:
+    if include_summary and not summary:
         raise ValueError("Current summary cannot be empty")
-    if not skill_categories:
+    if include_skills and not skill_categories:
         raise ValueError("Current skills cannot be empty")
 
     background_text = read_background_text(background_path)
-    system_prompt = build_revision_system_prompt(background_text, max_chars=ai_output_max_chars)
+    system_prompt = build_revision_system_prompt(
+        background_text,
+        max_chars=ai_output_max_chars,
+        include_summary=include_summary,
+        include_skills=include_skills,
+    )
     client = OpenAI(base_url=endpoint_url, api_key=api_key)
 
     messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
@@ -495,6 +750,8 @@ def revise_tailored_content(
                 summary=summary,
                 skill_categories=skill_categories,
                 feedback=feedback,
+                include_summary=include_summary,
+                include_skills=include_skills,
             ),
         }
     )
@@ -506,6 +763,9 @@ def revise_tailored_content(
             messages=messages,
             background_text=background_text,
             ai_output_max_chars=ai_output_max_chars,
+            include_summary=include_summary,
+            include_skills=include_skills,
+            preserved_output=normalized,
         )
     except AIResponseError as exc:
         if "Cannot connect to local model API" in str(exc):

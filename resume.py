@@ -40,6 +40,43 @@ RULE_COLOR_HEX = "1A568C"
 META_COLOR = RGBColor(0x55, 0x55, 0x55)
 LINK_COLOR = RGBColor(0x1A, 0x56, 0x8C)
 
+DEFAULT_RESUME_SECTIONS = [
+    "summary",
+    "skills",
+    "experience",
+    "education",
+    "projects",
+    "certifications",
+]
+VALID_RESUME_SECTIONS = frozenset(DEFAULT_RESUME_SECTIONS)
+
+
+def resolve_resume_sections(sections: list[str] | None) -> list[str]:
+    """Validate and normalize section ids; fall back to default when unset or empty."""
+    if not sections:
+        return list(DEFAULT_RESUME_SECTIONS)
+
+    unknown = [section for section in sections if section not in VALID_RESUME_SECTIONS]
+    if unknown:
+        raise ValueError(
+            f"Unknown resume section(s): {', '.join(unknown)}. "
+            f"Valid ids: {', '.join(sorted(VALID_RESUME_SECTIONS))}"
+        )
+
+    seen: set[str] = set()
+    resolved: list[str] = []
+    for section in sections:
+        if section not in seen:
+            seen.add(section)
+            resolved.append(section)
+    return resolved if resolved else list(DEFAULT_RESUME_SECTIONS)
+
+
+def ai_section_flags(sections: list[str] | None) -> tuple[bool, bool]:
+    """Return (include_summary, include_skills) from resolved resume section config."""
+    resolved = resolve_resume_sections(sections)
+    return "summary" in resolved, "skills" in resolved
+
 
 def load_background(path: Path) -> dict[str, Any]:
     """Load and validate YAML frontmatter from background.md."""
@@ -99,45 +136,104 @@ def validate_background(metadata: dict[str, Any]) -> dict[str, Any]:
     return metadata
 
 
-def build_resume(data: dict[str, Any], ai_output: dict[str, Any]) -> bytes:
-    """Merge structured background + AI fields, return DOCX bytes."""
-    normalized = normalize_ai_output(ai_output)
-    summary = normalized["summary"]
-    skill_categories = normalized["skill_categories"]
-
-    doc = Document()
-    _set_document_margins(doc)
-    _set_default_font(doc)
-
-    _add_header(doc, data["header"])
+def _render_summary_section(
+    doc: Document,
+    data: dict[str, Any],
+    normalized: dict[str, Any],
+) -> None:
     _add_section_heading(doc, "Professional Summary")
-    _add_body_paragraph(doc, summary)
-    _add_section_heading(doc, "Skills")
-    _add_skill_categories(doc, skill_categories)
+    _add_body_paragraph(doc, normalized["summary"])
 
+
+def _render_skills_section(
+    doc: Document,
+    data: dict[str, Any],
+    normalized: dict[str, Any],
+) -> None:
+    _add_section_heading(doc, "Skills")
+    _add_skill_categories(doc, normalized["skill_categories"])
+
+
+def _render_experience_section(
+    doc: Document,
+    data: dict[str, Any],
+    normalized: dict[str, Any],
+) -> None:
     experience = data.get("experience", [])
     if experience:
         _add_section_heading(doc, "Experience")
         for job in experience:
             _add_experience_entry(doc, job)
 
+
+def _render_education_section(
+    doc: Document,
+    data: dict[str, Any],
+    normalized: dict[str, Any],
+) -> None:
     education = data.get("education", [])
     if education:
         _add_section_heading(doc, "Education")
         for entry in education:
             _add_education_entry(doc, entry)
 
+
+def _render_projects_section(
+    doc: Document,
+    data: dict[str, Any],
+    normalized: dict[str, Any],
+) -> None:
     projects = data.get("projects", [])
     if projects:
         _add_section_heading(doc, "Projects")
         for project in projects:
             _add_project_entry(doc, project)
 
+
+def _render_certifications_section(
+    doc: Document,
+    data: dict[str, Any],
+    normalized: dict[str, Any],
+) -> None:
     certifications = data.get("certifications", [])
     if certifications:
         _add_section_heading(doc, "Certifications")
         for cert in certifications:
             _add_certification_entry(doc, cert)
+
+
+_SECTION_RENDERERS: dict[str, Any] = {
+    "summary": _render_summary_section,
+    "skills": _render_skills_section,
+    "experience": _render_experience_section,
+    "education": _render_education_section,
+    "projects": _render_projects_section,
+    "certifications": _render_certifications_section,
+}
+
+
+def build_resume(
+    data: dict[str, Any],
+    ai_output: dict[str, Any],
+    *,
+    sections: list[str] | None = None,
+) -> bytes:
+    """Merge structured background + AI fields, return DOCX bytes."""
+    resolved_sections = resolve_resume_sections(sections)
+    include_summary, include_skills = ai_section_flags(resolved_sections)
+    normalized = normalize_ai_output(
+        ai_output,
+        include_summary=include_summary,
+        include_skills=include_skills,
+    )
+
+    doc = Document()
+    _set_document_margins(doc)
+    _set_default_font(doc)
+
+    _add_header(doc, data["header"])
+    for section_id in resolved_sections:
+        _SECTION_RENDERERS[section_id](doc, data, normalized)
 
     buffer = io.BytesIO()
     doc.save(buffer)
@@ -505,25 +601,35 @@ def pdf_page_count(pdf_bytes: bytes) -> int:
     return len(PdfReader(io.BytesIO(pdf_bytes)).pages)
 
 
-def trim_ai_output_one_step(ai_output: dict[str, Any]) -> dict[str, Any]:
+def trim_ai_output_one_step(
+    ai_output: dict[str, Any],
+    *,
+    sections: list[str] | None = None,
+) -> dict[str, Any]:
     """Remove one unit of content to reduce rendered page count."""
-    normalized = normalize_ai_output(ai_output)
+    include_summary, include_skills = ai_section_flags(sections)
+    normalized = normalize_ai_output(
+        ai_output,
+        include_summary=include_summary,
+        include_skills=include_skills,
+    )
     summary = normalized["summary"]
     categories = [
         {"name": cat["name"], "skills": list(cat["skills"])}
         for cat in normalized["skill_categories"]
     ]
 
-    if categories and categories[-1]["skills"]:
+    if include_skills and categories and categories[-1]["skills"]:
         categories[-1]["skills"].pop()
         if not categories[-1]["skills"]:
             categories.pop()
         return {"summary": summary, "skill_categories": categories}
 
-    sentences = re.split(r"(?<=[.!?])\s+", summary)
-    if len(sentences) > 1:
-        sentences.pop()
-        return {"summary": " ".join(sentences).strip(), "skill_categories": categories}
+    if include_summary:
+        sentences = re.split(r"(?<=[.!?])\s+", summary)
+        if len(sentences) > 1:
+            sentences.pop()
+            return {"summary": " ".join(sentences).strip(), "skill_categories": categories}
 
     return normalized
 
@@ -534,6 +640,7 @@ def fit_resume_to_page_budget(
     *,
     max_pages: int = 2,
     max_chars: int | None = None,
+    sections: list[str] | None = None,
 ) -> tuple[dict[str, Any], bytes, bytes | None, int | None]:
     """
     Trim AI output until the rendered PDF fits max_pages.
@@ -541,15 +648,22 @@ def fit_resume_to_page_budget(
     Returns (fitted_ai_output, docx_bytes, pdf_bytes, page_count).
     page_count is None when LibreOffice is unavailable.
     """
-    current = normalize_ai_output(ai_output)
-    if max_chars is not None:
+    include_summary, include_skills = ai_section_flags(sections)
+    current = normalize_ai_output(
+        ai_output,
+        include_summary=include_summary,
+        include_skills=include_skills,
+    )
+    if max_chars is not None and (include_summary or include_skills):
         current = enforce_output_budget(
             current["summary"],
             current["skill_categories"],
             max_chars,
+            include_summary=include_summary,
+            include_skills=include_skills,
         )
 
-    docx_bytes = build_resume(background_data, current)
+    docx_bytes = build_resume(background_data, current, sections=sections)
     pdf_bytes = docx_to_pdf(docx_bytes)
     if pdf_bytes is None:
         return current, docx_bytes, None, None
@@ -558,11 +672,11 @@ def fit_resume_to_page_budget(
     for _ in range(30):
         if page_count <= max_pages:
             break
-        trimmed = trim_ai_output_one_step(current)
+        trimmed = trim_ai_output_one_step(current, sections=sections)
         if trimmed == current:
             break
         current = trimmed
-        docx_bytes = build_resume(background_data, current)
+        docx_bytes = build_resume(background_data, current, sections=sections)
         pdf_bytes = docx_to_pdf(docx_bytes)
         if pdf_bytes is None:
             break
@@ -577,6 +691,7 @@ def build_resume_artifacts(
     *,
     max_pages: int = 2,
     max_chars: int | None = None,
+    sections: list[str] | None = None,
 ) -> dict[str, Any]:
     """Build DOCX and derived preview/export artifacts from background + AI output."""
     fitted_output, docx_bytes, pdf_bytes, page_count = fit_resume_to_page_budget(
@@ -584,6 +699,7 @@ def build_resume_artifacts(
         ai_output,
         max_pages=max_pages,
         max_chars=max_chars,
+        sections=sections,
     )
     return {
         "ai_output": fitted_output,

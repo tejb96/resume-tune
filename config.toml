@@ -8,6 +8,15 @@ background_file = "./background.md"
 ai_output_max_chars = 967
 # Target page count for rendered PDF (requires LibreOffice).
 max_resume_pages = 2
+# Sections to include, in render order (after header).
+# Valid ids: summary, skills, experience, education, projects, certifications
+resume_sections = [
+    "skills",
+    "experience",
+    "education",
+    "projects",
+    "certifications",
+]
 
 [models]
 ollama = ["llama3.2", "mistral", "qwen2.5"]

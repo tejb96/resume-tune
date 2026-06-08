@@ -11,10 +11,10 @@ import yaml
 from ai import (
     AIResponseError,
     DEFAULT_AI_OUTPUT_MAX_CHARS,
+    EMPTY_AI_OUTPUT,
     filter_skill_categories,
     format_skill_categories,
     generate_tailored_content,
-    normalize_ai_output,
     parse_skill_categories,
     read_background_text,
     revise_tailored_content,
@@ -48,6 +48,7 @@ def rebuild_artifacts(
     *,
     max_pages: int,
     max_chars: int,
+    sections: list[str],
 ) -> dict:
     """Build DOCX, HTML preview, and optional PDF from current AI output."""
     artifacts = build_resume_artifacts(
@@ -55,6 +56,7 @@ def rebuild_artifacts(
         ai_output,
         max_pages=max_pages,
         max_chars=max_chars,
+        sections=sections,
     )
     candidate_name = background_data["header"]["name"]
     return {
@@ -72,6 +74,7 @@ def apply_artifacts_to_result(
     *,
     max_pages: int,
     max_chars: int,
+    sections: list[str],
 ) -> dict:
     """Update session result with new AI content and rebuilt preview artifacts."""
     artifacts = rebuild_artifacts(
@@ -79,6 +82,7 @@ def apply_artifacts_to_result(
         ai_output,
         max_pages=max_pages,
         max_chars=max_chars,
+        sections=sections,
     )
     fitted = artifacts["ai_output"]
     result["summary"] = fitted["summary"]
@@ -181,6 +185,10 @@ api_key = config.get("api_key", "ollama")
 default_model = config.get("model_name", "")
 max_chars = config.get("ai_output_max_chars", DEFAULT_AI_OUTPUT_MAX_CHARS)
 max_pages = int(config.get("max_resume_pages", 2))
+resume_sections = config["resume_sections"]
+include_summary = "summary" in resume_sections
+include_skills = "skills" in resume_sections
+needs_ai = include_summary or include_skills
 models = model_options(config)
 if default_model and default_model not in models:
     models = [default_model, *models]
@@ -189,10 +197,15 @@ elif not models and default_model:
 
 st.set_page_config(page_title="Resume Tailor", layout="wide")
 st.title("Resume Tailor")
-st.caption(
-    "Generate a tailored resume from a job description, preview it, revise summary or "
-    "skills via chat, then save as DOCX or PDF."
-)
+if needs_ai:
+    st.caption(
+        "Generate a tailored resume from a job description, preview it, revise summary or "
+        "skills via chat, then save as DOCX or PDF."
+    )
+else:
+    st.caption(
+        "Build a resume from background.md using your configured sections, then save as DOCX or PDF."
+    )
 
 example_background_path = ROOT / "background.example.md"
 try:
@@ -214,7 +227,11 @@ with st.sidebar:
     job_description = st.text_area(
         "Job description",
         height=280,
-        placeholder="Paste the full job description here...",
+        placeholder=(
+            "Paste the full job description here..."
+            if needs_ai
+            else "Optional when no AI sections are configured in config.toml."
+        ),
     )
     model_index = models.index(default_model) if default_model in models else 0
     selected_model = st.selectbox("Model", models, index=model_index)
@@ -233,7 +250,7 @@ with st.sidebar:
 if not background_ok:
     st.stop()
 
-if not endpoint_url:
+if needs_ai and not endpoint_url:
     st.error(
         "Set OPENAI_BASE_URL in a `.env` file (copy from `.env.example`) "
         "or `endpoint_url` in config.toml."
@@ -246,36 +263,50 @@ if "review_nonce" not in st.session_state:
     st.session_state.review_nonce = 0
 
 if generate:
-    if not job_description.strip():
+    if needs_ai and not job_description.strip():
         st.warning("Please paste a job description first.")
     else:
-        with st.spinner("Generating tailored summary and skills..."):
-            try:
-                ai_output, skill_warnings = generate_tailored_content(
-                    job_description,
-                    background_path,
-                    endpoint_url=endpoint_url,
-                    model_name=selected_model,
-                    api_key=api_key,
-                    ai_output_max_chars=max_chars,
-                )
-                with st.spinner("Building resume preview..."):
-                    st.session_state.review_nonce += 1
-                    result = apply_artifacts_to_result(
-                        {},
-                        background_data,
-                        ai_output,
-                        skill_warnings=skill_warnings,
-                        max_pages=max_pages,
-                        max_chars=max_chars,
+        try:
+            if needs_ai:
+                with st.spinner(
+                    "Generating tailored summary and skills..."
+                    if include_summary and include_skills
+                    else (
+                        "Generating tailored skills..."
+                        if include_skills
+                        else "Generating tailored summary..."
                     )
-                    result["job_description"] = job_description.strip()
-                    result["revision_history"] = []
-                    st.session_state.result = result
-            except AIResponseError as exc:
-                st.error(str(exc))
-            except ValueError as exc:
-                st.error(str(exc))
+                ):
+                    ai_output, skill_warnings = generate_tailored_content(
+                        job_description,
+                        background_path,
+                        endpoint_url=endpoint_url,
+                        model_name=selected_model,
+                        api_key=api_key,
+                        ai_output_max_chars=max_chars,
+                        include_summary=include_summary,
+                        include_skills=include_skills,
+                    )
+            else:
+                ai_output, skill_warnings = dict(EMPTY_AI_OUTPUT), []
+            with st.spinner("Building resume preview..."):
+                st.session_state.review_nonce += 1
+                result = apply_artifacts_to_result(
+                    {},
+                    background_data,
+                    ai_output,
+                    skill_warnings=skill_warnings,
+                    max_pages=max_pages,
+                    max_chars=max_chars,
+                    sections=resume_sections,
+                )
+                result["job_description"] = job_description.strip()
+                result["revision_history"] = []
+                st.session_state.result = result
+        except AIResponseError as exc:
+            st.error(str(exc))
+        except ValueError as exc:
+            st.error(str(exc))
 
 result = st.session_state.result
 
@@ -283,11 +314,17 @@ if result is not None and "skill_categories" not in result and result.get("skill
     result["skill_categories"] = [{"name": "Skills", "skills": result["skills"]}]
 
 if result is None:
-    st.info(
-        "Paste a job description in the sidebar and click **Generate tailored content**. "
-        "You'll see a resume preview immediately. Use the chat to revise summary or skills, "
-        "then save as DOCX or PDF."
-    )
+    if needs_ai:
+        st.info(
+            "Paste a job description in the sidebar and click **Generate tailored content**. "
+            "You'll see a resume preview immediately. Use the chat to revise summary or skills, "
+            "then save as DOCX or PDF."
+        )
+    else:
+        st.info(
+            "Click **Generate tailored content** to build a resume from background.md. "
+            "Then save as DOCX or PDF."
+        )
 else:
     if result.get("skill_warnings"):
         st.warning(
@@ -298,106 +335,138 @@ else:
     left_col, right_col = st.columns([2, 3], gap="large")
 
     with left_col:
-        st.subheader("Revise")
-        for message in result.get("revision_history", []):
-            with st.chat_message(message["role"]):
-                st.markdown(message["content"])
+        if needs_ai:
+            st.subheader("Revise")
+            for message in result.get("revision_history", []):
+                with st.chat_message(message["role"]):
+                    st.markdown(message["content"])
 
-        revision_prompt = st.chat_input(
-            "Ask for changes to the summary or skills...",
-            key="revision_chat_input",
-        )
-        if revision_prompt:
-            with st.spinner("Revising summary and skills..."):
-                try:
-                    current_output = {
-                        "summary": result["summary"],
-                        "skill_categories": result.get("skill_categories", []),
-                    }
-                    ai_output, skill_warnings = revise_tailored_content(
-                        result.get("job_description", job_description),
-                        current_output,
-                        revision_prompt,
-                        background_path,
-                        endpoint_url=endpoint_url,
-                        model_name=selected_model,
-                        api_key=api_key,
-                        ai_output_max_chars=max_chars,
-                        revision_history=result.get("revision_history"),
+            if include_summary and include_skills:
+                revision_placeholder = "Ask for changes to the summary or skills..."
+                revision_spinner = "Revising summary and skills..."
+                revision_reply = "Updated the summary and skills. Check the preview on the right."
+            elif include_skills:
+                revision_placeholder = "Ask for changes to the skills..."
+                revision_spinner = "Revising skills..."
+                revision_reply = "Updated the skills. Check the preview on the right."
+            else:
+                revision_placeholder = "Ask for changes to the summary..."
+                revision_spinner = "Revising summary..."
+                revision_reply = "Updated the summary. Check the preview on the right."
+
+            revision_prompt = st.chat_input(
+                revision_placeholder,
+                key="revision_chat_input",
+            )
+            if revision_prompt:
+                with st.spinner(revision_spinner):
+                    try:
+                        current_output = {
+                            "summary": result.get("summary", ""),
+                            "skill_categories": result.get("skill_categories", []),
+                        }
+                        ai_output, skill_warnings = revise_tailored_content(
+                            result.get("job_description", job_description),
+                            current_output,
+                            revision_prompt,
+                            background_path,
+                            endpoint_url=endpoint_url,
+                            model_name=selected_model,
+                            api_key=api_key,
+                            ai_output_max_chars=max_chars,
+                            revision_history=result.get("revision_history"),
+                            include_summary=include_summary,
+                            include_skills=include_skills,
+                        )
+                        with st.spinner("Updating resume preview..."):
+                            history = list(result.get("revision_history", []))
+                            history.append({"role": "user", "content": revision_prompt})
+                            history.append(
+                                {
+                                    "role": "assistant",
+                                    "content": revision_reply,
+                                }
+                            )
+                            apply_artifacts_to_result(
+                                result,
+                                background_data,
+                                ai_output,
+                                skill_warnings=skill_warnings,
+                                max_pages=max_pages,
+                                max_chars=max_chars,
+                                sections=resume_sections,
+                            )
+                            result["revision_history"] = history
+                            st.session_state.review_nonce += 1
+                            st.rerun()
+                    except AIResponseError as exc:
+                        st.error(str(exc))
+                    except ValueError as exc:
+                        st.error(str(exc))
+
+            with st.expander("Advanced edit"):
+                nonce = st.session_state.review_nonce
+                skill_categories = result.get("skill_categories", [])
+                manual_summary = ""
+                manual_skills_text = ""
+                if include_summary:
+                    manual_summary = st.text_area(
+                        "Professional Summary",
+                        value=result.get("summary", ""),
+                        height=120,
+                        key=f"edit_summary_{nonce}",
                     )
-                    with st.spinner("Updating resume preview..."):
-                        history = list(result.get("revision_history", []))
-                        history.append({"role": "user", "content": revision_prompt})
-                        history.append(
-                            {
-                                "role": "assistant",
-                                "content": (
-                                    "Updated the summary and skills. "
-                                    "Check the preview on the right."
-                                ),
-                            }
-                        )
-                        apply_artifacts_to_result(
-                            result,
-                            background_data,
-                            ai_output,
-                            skill_warnings=skill_warnings,
-                            max_pages=max_pages,
-                            max_chars=max_chars,
-                        )
-                        result["revision_history"] = history
-                        st.session_state.review_nonce += 1
-                        st.rerun()
-                except AIResponseError as exc:
-                    st.error(str(exc))
-                except ValueError as exc:
-                    st.error(str(exc))
+                if include_skills:
+                    manual_skills_text = st.text_area(
+                        "Skills (Category: skill1, skill2 — one category per line)",
+                        value=format_skill_categories(skill_categories),
+                        height=160,
+                        key=f"edit_skills_{nonce}",
+                    )
+                if st.button("Apply changes", key="apply_manual_edit"):
+                    manual_categories = (
+                        parse_skill_categories(manual_skills_text) if include_skills else []
+                    )
+                    apply_error: str | None = None
+                    filtered = manual_categories
 
-        with st.expander("Advanced edit"):
-            nonce = st.session_state.review_nonce
-            skill_categories = result.get("skill_categories", [])
-            manual_summary = st.text_area(
-                "Professional Summary",
-                value=result["summary"],
-                height=120,
-                key=f"edit_summary_{nonce}",
-            )
-            manual_skills_text = st.text_area(
-                "Skills (Category: skill1, skill2 — one category per line)",
-                value=format_skill_categories(skill_categories),
-                height=160,
-                key=f"edit_skills_{nonce}",
-            )
-            if st.button("Apply changes", key="apply_manual_edit"):
-                manual_categories = parse_skill_categories(manual_skills_text)
-                if not manual_summary.strip():
-                    st.error("Professional summary cannot be empty.")
-                elif not manual_categories:
-                    st.error("Add at least one skill category (e.g. Languages: Python, Go).")
-                else:
-                    background_text = read_background_text(background_path)
-                    filtered, dropped = filter_skill_categories(manual_categories, background_text)
-                    if dropped:
-                        st.error(
-                            "Skills not found in your background file: "
-                            + ", ".join(dropped)
+                    if include_summary and not manual_summary.strip():
+                        apply_error = "Professional summary cannot be empty."
+                    elif include_skills and not manual_categories:
+                        apply_error = "Add at least one skill category (e.g. Languages: Python, Go)."
+                    elif include_skills:
+                        background_text = read_background_text(background_path)
+                        filtered, dropped = filter_skill_categories(
+                            manual_categories,
+                            background_text,
                         )
-                    elif not filtered:
-                        st.error("No valid skills remain after background check.")
+                        if dropped:
+                            apply_error = (
+                                "Skills not found in your background file: "
+                                + ", ".join(dropped)
+                            )
+                        elif not filtered:
+                            apply_error = "No valid skills remain after background check."
+
+                    if apply_error:
+                        st.error(apply_error)
                     else:
                         with st.spinner("Updating resume preview..."):
                             apply_artifacts_to_result(
                                 result,
                                 background_data,
                                 {
-                                    "summary": manual_summary,
-                                    "skill_categories": filtered,
+                                    "summary": manual_summary if include_summary else "",
+                                    "skill_categories": filtered if include_skills else [],
                                 },
                                 max_pages=max_pages,
                                 max_chars=max_chars,
+                                sections=resume_sections,
                             )
                             st.session_state.review_nonce += 1
                             st.rerun()
+        else:
+            st.caption("No AI sections configured. Edit background.md or config.toml to enable revision.")
 
         render_save_section(result, output_dir)
 

@@ -61,6 +61,28 @@ docker compose up --build
 
 `config.toml` supplies paths, model presets, and `ai_output_max_chars` when env vars are not set.
 
+### Resume section layout
+
+`resume_sections` in `config.toml` controls which sections appear in the exported DOCX/PDF and their order (the header is always first). Valid section ids: `summary`, `skills`, `experience`, `education`, `projects`, `certifications`.
+
+```toml
+resume_sections = [
+    "summary",
+    "skills",
+    "experience",
+    "education",
+    "projects",
+    "certifications",
+]
+```
+
+- Omit a section to exclude it (e.g. remove `"summary"` to drop the professional summary).
+- Reorder entries to rearrange sections (e.g. put `"certifications"` before `"education"`).
+
+Omitting `summary` and/or `skills` also skips LLM generation for those fields. The character budget (`ai_output_max_chars`) applies only to included AI sections. If both are omitted, the app builds the resume from `background.md` only — no job description or LLM endpoint required.
+
+Background-backed sections still render only when their YAML lists are non-empty. Restart Streamlit after editing `config.toml` so cached settings reload.
+
 ## Dev checks
 
 ```bash

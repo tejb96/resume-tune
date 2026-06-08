@@ -7,6 +7,7 @@ import tomllib
 from pathlib import Path
 
 from ai import DEFAULT_AI_OUTPUT_MAX_CHARS
+from resume import resolve_resume_sections
 
 ROOT = Path(__file__).resolve().parent
 CONFIG_PATH = ROOT / "config.toml"
@@ -57,4 +58,5 @@ def load_settings() -> dict:
         "api_key": api_key,
         "model_name": model_name,
         "ai_output_max_chars": _resolve_ai_output_max_chars(config),
+        "resume_sections": resolve_resume_sections(config.get("resume_sections")),
     }

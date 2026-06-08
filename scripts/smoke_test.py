@@ -6,10 +6,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from resume import build_resume, build_resume_artifacts, docx_to_html, load_background
+from resume import build_resume, build_resume_artifacts, load_background
+from settings import load_settings
 
 
 def main() -> None:
+    config = load_settings()
+    sections = config["resume_sections"]
     data = load_background(ROOT / "background.example.md")
     ai_output = {
         "summary": (
@@ -33,8 +36,8 @@ def main() -> None:
             },
         ],
     }
-    docx_bytes = build_resume(data, ai_output)
-    artifacts = build_resume_artifacts(data, ai_output)
+    docx_bytes = build_resume(data, ai_output, sections=sections)
+    artifacts = build_resume_artifacts(data, ai_output, sections=sections)
     out = ROOT / "output" / "design_preview.docx"
     html_out = ROOT / "output" / "design_preview.html"
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -54,7 +57,7 @@ def main() -> None:
     print("  - LinkedIn/GitHub are Ctrl+click hyperlinks")
     print("  - Skills: one bullet per category with comma-joined skills")
     print("  - Experience: Role · Company · Location with dates right-aligned on same line")
-    print("  - Projects section appears before Certifications")
+    print(f"  - Section order follows config.toml: {', '.join(sections)}")
     print("  - Project shows inline tech + clickable URL")
 
 
