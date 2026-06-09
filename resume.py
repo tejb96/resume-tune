@@ -36,10 +36,10 @@ from docx.shared import Inches, Pt, RGBColor
 
 FONT_NAME = "Calibri"
 FONT_BODY = Pt(10)
-FONT_NAME_SIZE = Pt(15)
+FONT_NAME_SIZE = Pt(14)
 FONT_SECTION = Pt(11)
 MARGIN_TB = Inches(0.5)
-MARGIN_LR = Inches(0.6)
+MARGIN_LR = Inches(0.5)
 SECTION_SPACING_BEFORE = Pt(7)
 SECTION_SPACING_AFTER = Pt(3)
 BULLET_INDENT = Inches(0.22)
