@@ -7,10 +7,15 @@ from scoring import (
     SelectionPolicy,
     build_selection_from_scores,
     compute_content_composites,
+    enumerate_expandable_items,
+    expand_selection_by_highest_score,
     experience_bullet_composite,
     heuristic_ratings,
+    high_quality_omitted_items,
     normalize_rating,
+    selection_expand_exhausted,
     selection_trim_exhausted,
+    selection_with_all_items,
     trim_selection_by_lowest_score,
 )
 
@@ -243,3 +248,85 @@ def test_heuristic_ratings_produces_valid_selection() -> None:
     assert selection["experience_selections"]
     assert "content_composites" in selection
     assert compute_content_composites(background, ratings)
+
+
+def test_expand_adds_highest_composite_not_positional() -> None:
+    background = {
+        "experience": [
+            {
+                "company": "Co",
+                "title": "Eng",
+                "bullets": ["Strong bullet", "Weak bullet", "Mid bullet"],
+            }
+        ],
+        "projects": [],
+        "education": [],
+    }
+    selection = {
+        "experience_selections": [{"role_index": 0, "bullet_indices": [0]}],
+        "project_selections": [],
+        "education_indices": [],
+        "content_composites": {
+            "exp:0:0": 92.5,
+            "exp:0:1": 40.0,
+            "exp:0:2": 85.0,
+        },
+    }
+    expanded, event = expand_selection_by_highest_score(selection, background)
+    assert event is not None
+    assert event["added"] == "exp:0:2"
+    assert expanded["experience_selections"][0]["bullet_indices"] == [0, 2]
+
+
+def test_expand_exhausted_when_all_selected() -> None:
+    background = {
+        "experience": [{"company": "Co", "title": "Eng", "bullets": ["Only"]}],
+        "projects": [],
+        "education": [],
+    }
+    selection = {
+        "experience_selections": [{"role_index": 0, "bullet_indices": [0]}],
+        "project_selections": [],
+        "education_indices": [],
+        "content_composites": {"exp:0:0": 90.0},
+    }
+    assert selection_expand_exhausted(selection, background) is True
+
+
+def test_high_quality_omitted_filters_by_composite() -> None:
+    background = {
+        "experience": [
+            {"company": "Co", "title": "Eng", "bullets": ["Strong", "Weak"]},
+        ],
+        "projects": [],
+        "education": [],
+    }
+    selection = {
+        "experience_selections": [{"role_index": 0, "bullet_indices": [0]}],
+        "project_selections": [],
+        "education_indices": [],
+        "content_composites": {"exp:0:0": 92.5, "exp:0:1": 40.0},
+    }
+    omitted = high_quality_omitted_items(selection, background, min_composite=75.0)
+    assert len(omitted) == 0
+
+    selection["content_composites"]["exp:0:1"] = 80.0
+    omitted = high_quality_omitted_items(selection, background, min_composite=75.0)
+    assert len(omitted) == 1
+    assert omitted[0].key == "exp:0:1"
+
+
+def test_selection_with_all_items_adds_multiple() -> None:
+    selection = {
+        "experience_selections": [{"role_index": 0, "bullet_indices": [0]}],
+        "project_selections": [],
+        "education_indices": [],
+        "content_composites": {
+            "exp:0:0": 90.0,
+            "exp:0:1": 80.0,
+            "exp:0:2": 70.0,
+        },
+    }
+    items = enumerate_expandable_items(selection, {"experience": [{"bullets": ["a", "b", "c"]}], "projects": [], "education": []}, selection["content_composites"])
+    result = selection_with_all_items(selection, items)
+    assert result["experience_selections"][0]["bullet_indices"] == [0, 1, 2]

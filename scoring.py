@@ -22,8 +22,10 @@ DEFAULT_PREFER_EXPERIENCE_WITHIN_GAP = 10.0
 DEFAULT_MIN_EDUCATION_COMPOSITE = 25.0
 DEFAULT_MIN_EDUCATION_RELEVANCE_RATING = 3
 DEFAULT_MAX_EDUCATION_ENTRIES = 1
+DEFAULT_OVERFLOW_WARNING_MIN_COMPOSITE = 75.0
 
 TrimKind = Literal["experience_bullet", "project_bullet", "education"]
+ExpandKind = TrimKind
 
 
 @dataclass(frozen=True)
@@ -237,6 +239,27 @@ def compute_content_composites(
         composites[f"edu:{edu_index}"] = education_composite(rel)
 
     return composites
+
+
+def inventory_selection_policy(
+    background_data: dict[str, Any],
+    *,
+    min_project_entries: int = 0,
+    min_project_bullets: int = 0,
+) -> SelectionPolicy:
+    """Policy with max limits derived from background inventory (page fit drives final size)."""
+    experience = _experience_list(background_data)
+    projects = _projects_list(background_data)
+    education = _education_list(background_data)
+    max_bullets = max((len(job.get("bullets", [])) for job in experience), default=1)
+    return SelectionPolicy(
+        max_experience_entries=max(len(experience), 1),
+        max_bullets_per_role=max(max_bullets, 1),
+        max_project_entries=max(len(projects), 1),
+        max_education_entries=max(len(education), 1),
+        min_project_entries=min_project_entries,
+        min_project_bullets=min_project_bullets,
+    )
 
 
 def ratings_to_dict(ratings: ContentRatings) -> dict[str, Any]:
@@ -545,6 +568,7 @@ def _remove_trim_item(selection: dict[str, Any], item: TrimmableItem) -> dict[st
         "content_ratings": deepcopy(selection.get("content_ratings", {})),
         "content_composites": deepcopy(selection.get("content_composites", {})),
         "trim_log": list(selection.get("trim_log", [])),
+        "expand_log": list(selection.get("expand_log", [])),
     }
 
     if item.kind == "experience_bullet":
@@ -623,6 +647,238 @@ def selection_trim_exhausted(
         return True
     trimmable, _ = _enumerate_trimmable_items(selection, composites, policy)
     return not trimmable
+
+
+def _selected_experience_bullets(selection: dict[str, Any]) -> set[tuple[int, int]]:
+    selected: set[tuple[int, int]] = set()
+    for entry in selection.get("experience_selections", []):
+        role_index = entry["role_index"]
+        for bullet_index in entry.get("bullet_indices", []):
+            selected.add((role_index, bullet_index))
+    return selected
+
+
+def _selected_project_bullets(selection: dict[str, Any]) -> set[tuple[int, int]]:
+    selected: set[tuple[int, int]] = set()
+    for entry in selection.get("project_selections", []):
+        project_index = entry["project_index"]
+        for bullet_index in entry.get("bullet_indices", []):
+            selected.add((project_index, bullet_index))
+    return selected
+
+
+@dataclass(frozen=True)
+class ExpandableItem:
+    kind: ExpandKind
+    composite: float
+    role_index: int | None = None
+    bullet_index: int | None = None
+    project_index: int | None = None
+    education_index: int | None = None
+
+    @property
+    def key(self) -> str:
+        if self.kind == "experience_bullet":
+            return f"exp:{self.role_index}:{self.bullet_index}"
+        if self.kind == "project_bullet":
+            return f"proj:{self.project_index}:{self.bullet_index}"
+        return f"edu:{self.education_index}"
+
+
+def _expand_priority(kind: ExpandKind) -> int:
+    if kind == "experience_bullet":
+        return 3
+    if kind == "project_bullet":
+        return 2
+    return 1
+
+
+def enumerate_expandable_items(
+    selection: dict[str, Any],
+    background_data: dict[str, Any],
+    composites: dict[str, float],
+) -> list[ExpandableItem]:
+    """Return unselected scored items from background inventory, highest composite first."""
+    selected_exp = _selected_experience_bullets(selection)
+    selected_proj = _selected_project_bullets(selection)
+    selected_edu = set(selection.get("education_indices", []))
+
+    expandable: list[ExpandableItem] = []
+
+    for role_index, job in enumerate(_experience_list(background_data)):
+        for bullet_index, _bullet in enumerate(job.get("bullets", [])):
+            if (role_index, bullet_index) in selected_exp:
+                continue
+            key = f"exp:{role_index}:{bullet_index}"
+            if key not in composites:
+                continue
+            expandable.append(
+                ExpandableItem(
+                    kind="experience_bullet",
+                    composite=composites[key],
+                    role_index=role_index,
+                    bullet_index=bullet_index,
+                )
+            )
+
+    for project_index, project in enumerate(_projects_list(background_data)):
+        for bullet_index, _bullet in enumerate(project.get("bullets", [])):
+            if (project_index, bullet_index) in selected_proj:
+                continue
+            key = f"proj:{project_index}:{bullet_index}"
+            if key not in composites:
+                continue
+            expandable.append(
+                ExpandableItem(
+                    kind="project_bullet",
+                    composite=composites[key],
+                    project_index=project_index,
+                    bullet_index=bullet_index,
+                )
+            )
+
+    for edu_index, _entry in enumerate(_education_list(background_data)):
+        if edu_index in selected_edu:
+            continue
+        key = f"edu:{edu_index}"
+        if key not in composites:
+            continue
+        expandable.append(
+            ExpandableItem(
+                kind="education",
+                composite=composites[key],
+                education_index=edu_index,
+            )
+        )
+
+    expandable.sort(key=lambda item: (-item.composite, -_expand_priority(item.kind)))
+    return expandable
+
+
+def _pick_expand_candidate(expandable: list[ExpandableItem]) -> ExpandableItem | None:
+    if not expandable:
+        return None
+    max_composite = max(item.composite for item in expandable)
+    candidates = [item for item in expandable if item.composite >= max_composite - 0.001]
+    candidates.sort(key=lambda item: (-item.composite, -_expand_priority(item.kind)))
+    return candidates[0]
+
+
+def _add_expand_item(selection: dict[str, Any], item: ExpandableItem) -> dict[str, Any]:
+    result = {
+        "experience_selections": [
+            {"role_index": e["role_index"], "bullet_indices": list(e["bullet_indices"])}
+            for e in selection.get("experience_selections", [])
+        ],
+        "project_selections": [
+            {"project_index": p["project_index"], "bullet_indices": list(p["bullet_indices"])}
+            for p in selection.get("project_selections", [])
+        ],
+        "education_indices": list(selection.get("education_indices", [])),
+        "content_ratings": deepcopy(selection.get("content_ratings", {})),
+        "content_composites": deepcopy(selection.get("content_composites", {})),
+        "trim_log": list(selection.get("trim_log", [])),
+        "expand_log": list(selection.get("expand_log", [])),
+    }
+
+    if item.kind == "experience_bullet":
+        assert item.role_index is not None and item.bullet_index is not None
+        for entry in result["experience_selections"]:
+            if entry["role_index"] == item.role_index:
+                if item.bullet_index not in entry["bullet_indices"]:
+                    entry["bullet_indices"].append(item.bullet_index)
+                    entry["bullet_indices"].sort()
+                break
+        else:
+            result["experience_selections"].append(
+                {"role_index": item.role_index, "bullet_indices": [item.bullet_index]}
+            )
+    elif item.kind == "project_bullet":
+        assert item.project_index is not None and item.bullet_index is not None
+        for entry in result["project_selections"]:
+            if entry["project_index"] == item.project_index:
+                if item.bullet_index not in entry["bullet_indices"]:
+                    entry["bullet_indices"].append(item.bullet_index)
+                    entry["bullet_indices"].sort()
+                break
+        else:
+            result["project_selections"].append(
+                {"project_index": item.project_index, "bullet_indices": [item.bullet_index]}
+            )
+    elif item.kind == "education":
+        assert item.education_index is not None
+        if item.education_index not in result["education_indices"]:
+            result["education_indices"].append(item.education_index)
+            result["education_indices"].sort()
+
+    return result
+
+
+def expand_selection_by_highest_score(
+    selection: dict[str, Any],
+    background_data: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """
+    Add the highest composite unselected item from background inventory.
+
+    Returns (updated_selection, expand_event or None if nothing added).
+    """
+    composites = selection.get("content_composites", {})
+    if not composites:
+        return selection, None
+
+    expandable = enumerate_expandable_items(selection, background_data, composites)
+    candidate = _pick_expand_candidate(expandable)
+    if candidate is None:
+        return selection, None
+
+    updated = _add_expand_item(selection, candidate)
+    expand_event = {
+        "added": candidate.key,
+        "composite": candidate.composite,
+        "reason": "highest composite",
+    }
+    updated["expand_log"] = list(updated.get("expand_log", [])) + [expand_event]
+    return updated, expand_event
+
+
+def selection_expand_exhausted(
+    selection: dict[str, Any],
+    background_data: dict[str, Any],
+) -> bool:
+    """Return True when no score-driven expandable content remains."""
+    composites = selection.get("content_composites", {})
+    if not composites:
+        return True
+    return not enumerate_expandable_items(selection, background_data, composites)
+
+
+def high_quality_omitted_items(
+    selection: dict[str, Any],
+    background_data: dict[str, Any],
+    *,
+    min_composite: float = DEFAULT_OVERFLOW_WARNING_MIN_COMPOSITE,
+) -> list[ExpandableItem]:
+    """Unselected items at or above the high-quality composite threshold."""
+    composites = selection.get("content_composites", {})
+    if not composites:
+        return []
+    return [
+        item
+        for item in enumerate_expandable_items(selection, background_data, composites)
+        if item.composite >= min_composite
+    ]
+
+
+def selection_with_all_items(
+    selection: dict[str, Any],
+    items: list[ExpandableItem],
+) -> dict[str, Any]:
+    """Return a copy of selection with all given expandable items added."""
+    updated = selection
+    for item in items:
+        updated = _add_expand_item(updated, item)
+    return updated
 
 
 def top_experience_bullets_text(

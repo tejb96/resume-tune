@@ -14,9 +14,6 @@ from ai import (
 )
 from resume import resolve_resume_sections
 from selection import (
-    DEFAULT_MAX_BULLETS_PER_ROLE,
-    DEFAULT_MAX_EXPERIENCE_ENTRIES,
-    DEFAULT_MAX_PROJECT_ENTRIES,
     DEFAULT_MIN_PROJECT_BULLETS,
     DEFAULT_MIN_PROJECT_ENTRIES,
 )
@@ -73,11 +70,10 @@ def load_settings() -> dict:
         "resume_sections": resolve_resume_sections(config.get("resume_sections")),
         "max_resume_pages": int(config.get("max_resume_pages", 2)),
         "enable_job_aware_selection": bool(config.get("enable_job_aware_selection", False)),
-        "max_bullets_per_role": int(config.get("max_bullets_per_role", DEFAULT_MAX_BULLETS_PER_ROLE)),
-        "max_experience_entries": int(
-            config.get("max_experience_entries", DEFAULT_MAX_EXPERIENCE_ENTRIES)
+        "auto_fill_page_budget": bool(config.get("auto_fill_page_budget", True)),
+        "overflow_warning_min_composite": float(
+            config.get("overflow_warning_min_composite", 75.0)
         ),
-        "max_project_entries": int(config.get("max_project_entries", DEFAULT_MAX_PROJECT_ENTRIES)),
         "min_project_entries": int(config.get("min_project_entries", DEFAULT_MIN_PROJECT_ENTRIES)),
         "min_project_bullets": int(config.get("min_project_bullets", DEFAULT_MIN_PROJECT_BULLETS)),
         "max_skill_categories": int(

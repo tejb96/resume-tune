@@ -61,6 +61,8 @@ def rebuild_artifacts(
     max_certifications: int | None = None,
     min_project_entries: int = DEFAULT_MIN_PROJECT_ENTRIES,
     min_project_bullets: int = DEFAULT_MIN_PROJECT_BULLETS,
+    auto_fill_page_budget: bool = True,
+    overflow_warning_min_composite: float = 75.0,
 ) -> dict:
     """Build DOCX, HTML preview, and optional PDF from current AI output."""
     artifacts = build_resume_artifacts(
@@ -73,6 +75,8 @@ def rebuild_artifacts(
         max_certifications=max_certifications,
         min_project_entries=min_project_entries,
         min_project_bullets=min_project_bullets,
+        auto_fill_page_budget=auto_fill_page_budget,
+        overflow_warning_min_composite=overflow_warning_min_composite,
     )
     candidate_name = background_data["header"]["name"]
     return {
@@ -95,6 +99,8 @@ def apply_artifacts_to_result(
     max_certifications: int | None = None,
     min_project_entries: int = DEFAULT_MIN_PROJECT_ENTRIES,
     min_project_bullets: int = DEFAULT_MIN_PROJECT_BULLETS,
+    auto_fill_page_budget: bool = True,
+    overflow_warning_min_composite: float = 75.0,
 ) -> dict:
     """Update session result with new AI content and rebuilt preview artifacts."""
     artifacts = rebuild_artifacts(
@@ -107,6 +113,8 @@ def apply_artifacts_to_result(
         max_certifications=max_certifications,
         min_project_entries=min_project_entries,
         min_project_bullets=min_project_bullets,
+        auto_fill_page_budget=auto_fill_page_budget,
+        overflow_warning_min_composite=overflow_warning_min_composite,
     )
     fitted = artifacts["ai_output"]
     result["summary"] = fitted["summary"]
@@ -134,6 +142,8 @@ def artifact_build_kwargs(result: dict | None = None) -> dict:
         "max_certifications": max_certifications,
         "min_project_entries": min_project_entries,
         "min_project_bullets": min_project_bullets,
+        "auto_fill_page_budget": auto_fill_page_budget,
+        "overflow_warning_min_composite": overflow_warning_min_composite,
     }
     if result is not None:
         kwargs["content_selection"] = result.get("content_selection")
@@ -184,11 +194,14 @@ def render_page_fit_diagnostic(
             "trim_stalled": False,
         }
 
-    with st.expander("Page fit details", expanded=bool(stats.get("trim_stalled"))):
+    with st.expander(
+        "Page fit details",
+        expanded=bool(stats.get("trim_stalled") or stats.get("overflow_warning")),
+    ):
         page_count = stats.get("page_count")
-        max_pages = stats.get("max_pages")
-        if page_count is not None and max_pages is not None:
-            st.caption(f"Pages: **{page_count}** / target **{max_pages}**")
+        max_pages_val = stats.get("max_pages")
+        if page_count is not None and max_pages_val is not None:
+            st.caption(f"Pages: **{page_count}** / target **{max_pages_val}**")
         else:
             st.caption("Pages: unavailable (LibreOffice required for PDF measurement)")
 
@@ -205,11 +218,18 @@ def render_page_fit_diagnostic(
             f"**{stats.get('project_bullets', 0)}** bullets"
         )
 
+        expand_log = stats.get("expand_log") or []
+        if expand_log:
+            st.caption(f"Auto-filled **{len(expand_log)}** item(s) to use available page space.")
+
+        if stats.get("overflow_warning") and stats.get("overflow_message"):
+            st.info(stats["overflow_message"])
+
         if stats.get("trim_stalled"):
             st.warning(
                 "Still over the page budget after trimming experience and project bullets. "
-                "Skills were not modified. Shorten background.md, lower "
-                "max_experience_entries / max_bullets_per_role, or omit sections in config.toml."
+                "Skills were not modified. Shorten bullets in background.md or omit sections "
+                "in config.toml."
             )
 
 
@@ -286,9 +306,8 @@ default_model = config.get("model_name", "")
 max_chars = config.get("ai_output_max_chars", DEFAULT_AI_OUTPUT_MAX_CHARS)
 max_pages = int(config.get("max_resume_pages", 2))
 enable_job_aware_selection = bool(config.get("enable_job_aware_selection", False))
-max_bullets_per_role = int(config.get("max_bullets_per_role", 3))
-max_experience_entries = int(config.get("max_experience_entries", 4))
-max_project_entries = int(config.get("max_project_entries", 2))
+auto_fill_page_budget = bool(config.get("auto_fill_page_budget", True))
+overflow_warning_min_composite = float(config.get("overflow_warning_min_composite", 75.0))
 min_project_entries = int(config.get("min_project_entries", 1))
 min_project_bullets = int(config.get("min_project_bullets", 1))
 max_skill_categories = int(config.get("max_skill_categories", 4))
@@ -388,9 +407,6 @@ if generate:
             content_selection = None
             if enable_job_aware_selection:
                 selection_limits = {
-                    "max_experience_entries": max_experience_entries,
-                    "max_bullets_per_role": max_bullets_per_role,
-                    "max_project_entries": max_project_entries,
                     "min_project_entries": min_project_entries,
                     "min_project_bullets": min_project_bullets,
                 }
@@ -479,10 +495,12 @@ else:
         max_p = diagnostics.get("max_pages", max_pages)
         st.error(
             f"Resume is still {page_count} page(s) (target: {max_p}) after trimming experience "
-            "and project bullets. Skills were not modified. Shorten bullets in background.md, "
-            "lower max_experience_entries / max_bullets_per_role in config.toml, or remove "
-            "sections such as projects or certifications."
+            "and project bullets. Skills were not modified. Shorten bullets in background.md "
+            "or remove sections such as projects or certifications."
         )
+
+    if diagnostics.get("overflow_warning") and diagnostics.get("overflow_message"):
+        st.info(diagnostics["overflow_message"])
 
     left_col, right_col = st.columns([2, 3], gap="large")
 

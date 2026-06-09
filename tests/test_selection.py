@@ -16,10 +16,10 @@ from selection import (
     enforce_project_floor,
     full_selection,
     parse_ratings_response,
-    selection_policy_from_limits,
+    selection_policy_for_background,
     trim_selection_one_step,
 )
-from scoring import build_selection_from_scores
+from scoring import SelectionPolicy, build_selection_from_scores
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -93,7 +93,7 @@ def test_ratings_build_selects_relevant_role_and_bullets(sample_background: dict
     selection = build_selection_from_scores(
         sample_background,
         ratings,
-        policy=selection_policy_from_limits(max_experience_entries=2, max_bullets_per_role=2),
+        policy=SelectionPolicy(max_experience_entries=2, max_bullets_per_role=2),
     )
     role_indices = [e["role_index"] for e in selection["experience_selections"]]
     assert role_indices[0] == 1
@@ -131,16 +131,10 @@ def test_apply_content_selection_filters_education(sample_background: dict) -> N
     assert render_data["education"][0]["degree"] == sample_background["education"][0]["degree"]
 
 
-def test_default_selection_respects_limits(sample_background: dict) -> None:
-    selection = default_selection(
-        sample_background,
-        max_experience_entries=1,
-        max_bullets_per_role=2,
-        max_project_entries=1,
-    )
-    assert len(selection["experience_selections"]) == 1
-    assert len(selection["experience_selections"][0]["bullet_indices"]) <= 2
-    assert len(selection["project_selections"]) <= 1
+def test_default_selection_includes_scores(sample_background: dict) -> None:
+    selection = default_selection(sample_background)
+    assert selection["experience_selections"]
+    assert "content_composites" in selection
     assert selection["project_selections"]
 
 
@@ -364,6 +358,118 @@ def test_fit_resume_trims_lowest_composite_not_position() -> None:
     assert fitted_selection["project_selections"][0]["bullet_indices"] == [0]
     assert diagnostics["trim_log"]
     assert diagnostics["trim_log"][0]["removed"] == "exp:0:1"
+
+
+def test_fit_resume_expands_until_page_overflow() -> None:
+    """Expand loop adds highest-scored bullets while trial PDF still fits."""
+    background = {
+        "header": {"name": "Test User", "email": "test@example.com"},
+        "experience": [
+            {
+                "company": "Co",
+                "title": "Engineer",
+                "start": "2020-01",
+                "end": "present",
+                "bullets": ["Strong bullet", "Weak bullet", "Mid bullet"],
+            }
+        ],
+        "education": [],
+        "projects": [],
+        "certifications": [],
+    }
+    selection = {
+        "experience_selections": [{"role_index": 0, "bullet_indices": [0]}],
+        "project_selections": [],
+        "education_indices": [],
+        "content_composites": {
+            "exp:0:0": 92.5,
+            "exp:0:1": 40.0,
+            "exp:0:2": 85.0,
+        },
+    }
+    call_count = {"n": 0}
+
+    def fake_page_count(_pdf: bytes) -> int:
+        call_count["n"] += 1
+        # Initial + first expand fits; second expand would overflow
+        return 1 if call_count["n"] <= 2 else 2
+
+    with patch("resume.docx_to_pdf", return_value=b"%PDF-fake"):
+        with patch("resume.pdf_page_count", side_effect=fake_page_count):
+            _ai, fitted_selection, _docx, _pdf, page_count, diagnostics = (
+                fit_resume_to_page_budget(
+                    background,
+                    {"summary": "", "skill_categories": []},
+                    max_pages=1,
+                    sections=["experience"],
+                    content_selection=selection,
+                )
+            )
+
+    assert page_count == 1
+    assert fitted_selection["experience_selections"][0]["bullet_indices"] == [0, 2]
+    assert diagnostics["expand_log"]
+    assert diagnostics["expand_log"][0]["added"] == "exp:0:2"
+
+
+def test_fit_resume_overflow_warning_when_strong_content_remains() -> None:
+    from resume import _page_fit_diagnostics
+
+    background = {
+        "header": {"name": "Test User", "email": "test@example.com"},
+        "experience": [
+            {
+                "company": "Co",
+                "title": "Engineer",
+                "start": "2020-01",
+                "end": "present",
+                "bullets": ["On page", "Extra strong"],
+            },
+            {
+                "company": "Old",
+                "title": "Intern",
+                "start": "2018-01",
+                "end": "2019-12",
+                "bullets": ["More strong content for page two"],
+            },
+        ],
+        "education": [],
+        "projects": [],
+        "certifications": [],
+    }
+    selection = {
+        "experience_selections": [{"role_index": 0, "bullet_indices": [0]}],
+        "project_selections": [],
+        "education_indices": [],
+        "content_composites": {
+            "exp:0:0": 92.5,
+            "exp:0:1": 80.0,
+            "exp:1:0": 85.0,
+        },
+    }
+    ai_output = {"summary": "", "skill_categories": []}
+
+    def mock_render(sel: dict, _ai: dict) -> tuple[bytes, bytes, int]:
+        bullets = sum(len(e["bullet_indices"]) for e in sel["experience_selections"])
+        pages = 2 if bullets >= 3 else 1
+        return b"docx", b"%PDF", pages
+
+    diagnostics = _page_fit_diagnostics(
+        background,
+        ai_output,
+        selection,
+        page_count=1,
+        max_pages=1,
+        max_chars=None,
+        include_summary=False,
+        include_skills=False,
+        trim_stalled=False,
+        render_page_count=mock_render,
+        ai_output_for_render=ai_output,
+    )
+
+    assert diagnostics["overflow_warning"] is True
+    assert diagnostics["omitted_high_quality_count"] == 2
 
 
 def test_build_resume_with_selection_excludes_unselected_bullets(sample_background: dict) -> None:

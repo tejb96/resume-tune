@@ -89,18 +89,20 @@ Background-backed sections still render only when their YAML lists are non-empty
 
 ```toml
 max_resume_pages = 1
-ai_output_max_chars = 600
+auto_fill_page_budget = true
+overflow_warning_min_composite = 75
 enable_job_aware_selection = true
-max_bullets_per_role = 3
-max_experience_entries = 3
-max_project_entries = 2
+min_project_entries = 1
+min_project_bullets = 1
 max_skill_categories = 4
 max_skills_per_category = 5
 max_chars_per_skill_line = 88
 max_certifications = 1
 ```
 
-When `enable_job_aware_selection` is true, the LLM picks existing experience/project bullets by index (verbatim from `background.md`) ranked for the job description. Skills are optimized at generation time (one line per category, count limits) and are **not** trimmed during page fitting. If the PDF is still over one page, the fit loop trims selected experience/project bullets only. Use **Page fit details** in the sidebar to see counts and trim status.
+When `enable_job_aware_selection` is true, the LLM rates each experience/project/education item 1–5 for the job. The app builds an initial quality-ranked selection, then **auto-fills** the page budget by adding the highest-scored omitted bullets (trial-rendered via PDF so a partial second page never appears). If content still exceeds `max_resume_pages`, the fit loop trims lowest-scored bullets. Skills are optimized at generation time and are **not** modified during page fitting.
+
+If enough high-scoring content remains to fill a full additional page, the app shows an overflow notice suggesting a higher `max_resume_pages`. Use **Page fit details** in the sidebar to see counts, expand/trim logs, and warnings.
 
 Keep a rich `background.md` as source of truth; the app selects what ships per job rather than rewriting bullets. List your primary certification first in YAML when using `max_certifications = 1` (e.g. AWS SAA).
 

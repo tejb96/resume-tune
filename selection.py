@@ -14,12 +14,10 @@ from scoring import (
     SelectionPolicy,
     build_selection_from_scores,
     heuristic_ratings,
+    inventory_selection_policy,
     ratings_from_payload,
 )
 
-DEFAULT_MAX_BULLETS_PER_ROLE = 3
-DEFAULT_MAX_EXPERIENCE_ENTRIES = 4
-DEFAULT_MAX_PROJECT_ENTRIES = 2
 DEFAULT_MIN_PROJECT_ENTRIES = 1
 DEFAULT_MIN_PROJECT_BULLETS = 1
 
@@ -125,39 +123,19 @@ def full_selection(background_data: dict[str, Any]) -> dict[str, Any]:
 def default_selection(
     background_data: dict[str, Any],
     *,
-    max_experience_entries: int = DEFAULT_MAX_EXPERIENCE_ENTRIES,
-    max_bullets_per_role: int = DEFAULT_MAX_BULLETS_PER_ROLE,
-    max_project_entries: int = DEFAULT_MAX_PROJECT_ENTRIES,
     min_project_entries: int = DEFAULT_MIN_PROJECT_ENTRIES,
     min_project_bullets: int = DEFAULT_MIN_PROJECT_BULLETS,
 ) -> dict[str, Any]:
-    """Select all content capped by configured limits (most recent roles first)."""
-    experience_selections: list[dict[str, Any]] = []
-    for role_index, job in enumerate(_experience_list(background_data)[:max_experience_entries]):
-        bullet_indices = list(range(min(len(job.get("bullets", [])), max_bullets_per_role)))
-        if bullet_indices:
-            experience_selections.append(
-                {"role_index": role_index, "bullet_indices": bullet_indices}
-            )
-
-    project_selections: list[dict[str, Any]] = []
-    for project_index, project in enumerate(_projects_list(background_data)[:max_project_entries]):
-        bullet_indices = list(range(min(len(project.get("bullets", [])), max_bullets_per_role)))
-        if bullet_indices:
-            project_selections.append(
-                {"project_index": project_index, "bullet_indices": bullet_indices}
-            )
-
-    selection = {
-        "experience_selections": experience_selections,
-        "project_selections": project_selections,
-        "education_indices": _all_education_indices(background_data),
-    }
-    return enforce_project_floor(
+    """Score-based seed selection using recency-biased heuristic ratings."""
+    policy = inventory_selection_policy(
         background_data,
-        selection,
         min_project_entries=min_project_entries,
         min_project_bullets=min_project_bullets,
+    )
+    return build_selection_from_scores(
+        background_data,
+        heuristic_ratings(background_data),
+        policy=policy,
     )
 
 
@@ -411,18 +389,14 @@ def build_ratings_system_prompt(background_data: dict[str, Any]) -> str:
     )
 
 
-def selection_policy_from_limits(
+def selection_policy_for_background(
+    background_data: dict[str, Any],
     *,
-    max_experience_entries: int = DEFAULT_MAX_EXPERIENCE_ENTRIES,
-    max_bullets_per_role: int = DEFAULT_MAX_BULLETS_PER_ROLE,
-    max_project_entries: int = DEFAULT_MAX_PROJECT_ENTRIES,
     min_project_entries: int = DEFAULT_MIN_PROJECT_ENTRIES,
     min_project_bullets: int = DEFAULT_MIN_PROJECT_BULLETS,
 ) -> SelectionPolicy:
-    return SelectionPolicy(
-        max_experience_entries=max_experience_entries,
-        max_bullets_per_role=max_bullets_per_role,
-        max_project_entries=max_project_entries,
+    return inventory_selection_policy(
+        background_data,
         min_project_entries=min_project_entries,
         min_project_bullets=min_project_bullets,
     )
@@ -435,9 +409,6 @@ def generate_content_selection(
     endpoint_url: str,
     model_name: str,
     api_key: str = "ollama",
-    max_experience_entries: int = DEFAULT_MAX_EXPERIENCE_ENTRIES,
-    max_bullets_per_role: int = DEFAULT_MAX_BULLETS_PER_ROLE,
-    max_project_entries: int = DEFAULT_MAX_PROJECT_ENTRIES,
     min_project_entries: int = DEFAULT_MIN_PROJECT_ENTRIES,
     min_project_bullets: int = DEFAULT_MIN_PROJECT_BULLETS,
 ) -> dict[str, Any]:
@@ -452,10 +423,8 @@ def generate_content_selection(
     if not job_description.strip():
         raise ValueError("Job description cannot be empty")
 
-    policy = selection_policy_from_limits(
-        max_experience_entries=max_experience_entries,
-        max_bullets_per_role=max_bullets_per_role,
-        max_project_entries=max_project_entries,
+    policy = selection_policy_for_background(
+        background_data,
         min_project_entries=min_project_entries,
         min_project_bullets=min_project_bullets,
     )

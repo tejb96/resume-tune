@@ -8,11 +8,12 @@ background_file = "./background.md"
 ai_output_max_chars = 600
 # Target page count for rendered PDF (requires LibreOffice).
 max_resume_pages = 1
+# Greedily add highest-scored content until the page budget is full.
+auto_fill_page_budget = true
+# Composite score threshold (75 = rating 4+) for overflow warnings.
+overflow_warning_min_composite = 75
 # Job-aware bullet selection from background.md (requires LLM when true).
 enable_job_aware_selection = true
-max_bullets_per_role = 3
-max_experience_entries = 3
-max_project_entries = 2
 min_project_entries = 1
 min_project_bullets = 1
 # Skills layout (enforced at generation — never trimmed during page fitting).

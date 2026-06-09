@@ -18,12 +18,19 @@ from pypdf import PdfReader
 import frontmatter
 from ai import ai_output_char_count, normalize_ai_output
 from docx import Document
-from scoring import SelectionPolicy, trim_selection_by_lowest_score
+from scoring import (
+    DEFAULT_OVERFLOW_WARNING_MIN_COMPOSITE,
+    SelectionPolicy,
+    expand_selection_by_highest_score,
+    high_quality_omitted_items,
+    selection_with_all_items,
+    trim_selection_by_lowest_score,
+)
 from selection import (
     DEFAULT_MIN_PROJECT_BULLETS,
     DEFAULT_MIN_PROJECT_ENTRIES,
     apply_content_selection,
-    full_selection,
+    default_selection,
     selection_trim_exhausted,
     static_content_stats,
     trim_selection_one_step,
@@ -674,9 +681,11 @@ def fit_resume_to_page_budget(
     max_certifications: int | None = None,
     min_project_entries: int = DEFAULT_MIN_PROJECT_ENTRIES,
     min_project_bullets: int = DEFAULT_MIN_PROJECT_BULLETS,
+    auto_fill_page_budget: bool = True,
+    overflow_warning_min_composite: float = DEFAULT_OVERFLOW_WARNING_MIN_COMPOSITE,
 ) -> tuple[dict[str, Any], dict[str, Any], bytes, bytes | None, int | None, dict[str, Any]]:
     """
-    Trim AI output and static selection until the rendered PDF fits max_pages.
+    Expand or trim selection (and summary) until the rendered PDF fits max_pages.
 
     Returns (fitted_ai_output, fitted_selection, docx_bytes, pdf_bytes, page_count, diagnostics).
     page_count is None when LibreOffice is unavailable.
@@ -688,7 +697,11 @@ def fit_resume_to_page_budget(
         include_skills=include_skills,
     )
     if content_selection is None:
-        current_selection = full_selection(background_data)
+        current_selection = default_selection(
+            background_data,
+            min_project_entries=min_project_entries,
+            min_project_bullets=min_project_bullets,
+        )
     else:
         current_selection = {
             "experience_selections": [
@@ -701,19 +714,26 @@ def fit_resume_to_page_budget(
             ],
             "education_indices": list(content_selection.get("education_indices", [])),
         }
-        # Score metadata enables relevance-driven (instead of positional) trimming.
-        for key in ("content_ratings", "content_composites", "trim_log"):
+        for key in ("content_ratings", "content_composites", "trim_log", "expand_log"):
             if key in content_selection:
                 current_selection[key] = deepcopy(content_selection[key])
 
-    docx_bytes = build_resume(
-        background_data,
-        current,
-        sections=sections,
-        content_selection=current_selection,
-        max_certifications=max_certifications,
-    )
-    pdf_bytes = docx_to_pdf(docx_bytes)
+    def _render_and_measure(
+        selection: dict[str, Any],
+        ai: dict[str, Any],
+    ) -> tuple[bytes, bytes | None, int | None]:
+        docx = build_resume(
+            background_data,
+            ai,
+            sections=sections,
+            content_selection=selection,
+            max_certifications=max_certifications,
+        )
+        pdf = docx_to_pdf(docx)
+        pages = pdf_page_count(pdf) if pdf else None
+        return docx, pdf, pages
+
+    docx_bytes, pdf_bytes, page_count = _render_and_measure(current_selection, current)
     trim_stalled = False
     if pdf_bytes is None:
         diagnostics = _page_fit_diagnostics(
@@ -726,6 +746,7 @@ def fit_resume_to_page_budget(
             include_summary=include_summary,
             include_skills=include_skills,
             trim_stalled=False,
+            overflow_warning_min_composite=overflow_warning_min_composite,
         )
         return current, current_selection, docx_bytes, None, None, diagnostics
 
@@ -754,7 +775,21 @@ def fit_resume_to_page_budget(
             )
         return selection, False
 
-    page_count = pdf_page_count(pdf_bytes)
+    if auto_fill_page_budget and current_selection.get("content_composites"):
+        for _ in range(50):
+            expanded, event = expand_selection_by_highest_score(
+                current_selection, background_data
+            )
+            if event is None:
+                break
+            _trial_docx, trial_pdf, trial_pages = _render_and_measure(expanded, current)
+            if trial_pdf is None or trial_pages is None or trial_pages > max_pages:
+                break
+            current_selection = expanded
+            docx_bytes = _trial_docx
+            pdf_bytes = trial_pdf
+            page_count = trial_pages
+
     for _ in range(30):
         if page_count <= max_pages:
             break
@@ -768,17 +803,9 @@ def fit_resume_to_page_budget(
             trim_stalled = page_count > max_pages
             break
 
-        docx_bytes = build_resume(
-            background_data,
-            current,
-            sections=sections,
-            content_selection=current_selection,
-            max_certifications=max_certifications,
-        )
-        pdf_bytes = docx_to_pdf(docx_bytes)
+        docx_bytes, pdf_bytes, page_count = _render_and_measure(current_selection, current)
         if pdf_bytes is None:
             break
-        page_count = pdf_page_count(pdf_bytes)
 
     if page_count is not None and page_count > max_pages:
         trim_stalled = True
@@ -793,6 +820,9 @@ def fit_resume_to_page_budget(
         include_summary=include_summary,
         include_skills=include_skills,
         trim_stalled=trim_stalled,
+        overflow_warning_min_composite=overflow_warning_min_composite,
+        render_page_count=_render_and_measure,
+        ai_output_for_render=current,
     )
     return current, current_selection, docx_bytes, pdf_bytes, page_count, diagnostics
 
@@ -808,6 +838,9 @@ def _page_fit_diagnostics(
     include_summary: bool,
     include_skills: bool,
     trim_stalled: bool,
+    overflow_warning_min_composite: float = DEFAULT_OVERFLOW_WARNING_MIN_COMPOSITE,
+    render_page_count: Any | None = None,
+    ai_output_for_render: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     stats = static_content_stats(background_data, content_selection)
     fitted_chars = ai_output_char_count(
@@ -816,6 +849,36 @@ def _page_fit_diagnostics(
         include_summary=include_summary,
         include_skills=include_skills,
     )
+
+    overflow_warning = False
+    overflow_message: str | None = None
+    omitted_high_quality_count = 0
+
+    if (
+        page_count is not None
+        and render_page_count is not None
+        and ai_output_for_render is not None
+        and content_selection.get("content_composites")
+    ):
+        omitted = high_quality_omitted_items(
+            content_selection,
+            background_data,
+            min_composite=overflow_warning_min_composite,
+        )
+        omitted_high_quality_count = len(omitted)
+        if omitted:
+            trial_selection = selection_with_all_items(content_selection, omitted)
+            _docx, trial_pdf, trial_pages = render_page_count(
+                trial_selection, ai_output_for_render
+            )
+            if trial_pages is not None and trial_pages >= max_pages + 1:
+                overflow_warning = True
+                overflow_message = (
+                    f"Enough strong job-relevant content remains to fill a full additional "
+                    f"page ({omitted_high_quality_count} high-scoring items omitted). "
+                    f"Consider setting max_resume_pages = {max_pages + 1}."
+                )
+
     return {
         **stats,
         "page_count": page_count,
@@ -824,6 +887,10 @@ def _page_fit_diagnostics(
         "ai_char_budget": max_chars,
         "trim_stalled": trim_stalled,
         "trim_log": list(content_selection.get("trim_log", [])),
+        "expand_log": list(content_selection.get("expand_log", [])),
+        "overflow_warning": overflow_warning,
+        "overflow_message": overflow_message,
+        "omitted_high_quality_count": omitted_high_quality_count,
     }
 
 
@@ -838,6 +905,8 @@ def build_resume_artifacts(
     max_certifications: int | None = None,
     min_project_entries: int = DEFAULT_MIN_PROJECT_ENTRIES,
     min_project_bullets: int = DEFAULT_MIN_PROJECT_BULLETS,
+    auto_fill_page_budget: bool = True,
+    overflow_warning_min_composite: float = DEFAULT_OVERFLOW_WARNING_MIN_COMPOSITE,
 ) -> dict[str, Any]:
     """Build DOCX and derived preview/export artifacts from background + AI output."""
     fitted_output, fitted_selection, docx_bytes, pdf_bytes, page_count, diagnostics = (
@@ -851,6 +920,8 @@ def build_resume_artifacts(
             max_certifications=max_certifications,
             min_project_entries=min_project_entries,
             min_project_bullets=min_project_bullets,
+            auto_fill_page_budget=auto_fill_page_budget,
+            overflow_warning_min_composite=overflow_warning_min_composite,
         )
     )
     return {
