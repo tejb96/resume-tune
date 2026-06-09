@@ -7,6 +7,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+from copy import deepcopy
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,7 @@ from pypdf import PdfReader
 import frontmatter
 from ai import ai_output_char_count, normalize_ai_output
 from docx import Document
+from scoring import SelectionPolicy, trim_selection_by_lowest_score
 from selection import (
     DEFAULT_MIN_PROJECT_BULLETS,
     DEFAULT_MIN_PROJECT_ENTRIES,
@@ -698,6 +700,10 @@ def fit_resume_to_page_budget(
             ],
             "education_indices": list(content_selection.get("education_indices", [])),
         }
+        # Score metadata enables relevance-driven (instead of positional) trimming.
+        for key in ("content_ratings", "content_composites", "trim_log"):
+            if key in content_selection:
+                current_selection[key] = deepcopy(content_selection[key])
 
     docx_bytes = build_resume(
         background_data,
@@ -722,28 +728,42 @@ def fit_resume_to_page_budget(
         )
         return current, current_selection, docx_bytes, None, None, diagnostics
 
+    trim_policy = SelectionPolicy(
+        min_project_entries=min_project_entries,
+        min_project_bullets=min_project_bullets,
+    )
+
+    def _trim_static_one_step(selection: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+        """Trim by lowest relevance score when available, else by position."""
+        if selection.get("content_composites"):
+            updated, event = trim_selection_by_lowest_score(selection, policy=trim_policy)
+            return updated, event is not None
+        if not selection_trim_exhausted(
+            selection,
+            min_project_entries=min_project_entries,
+            min_project_bullets=min_project_bullets,
+        ):
+            return (
+                trim_selection_one_step(
+                    selection,
+                    min_project_entries=min_project_entries,
+                    min_project_bullets=min_project_bullets,
+                ),
+                True,
+            )
+        return selection, False
+
     page_count = pdf_page_count(pdf_bytes)
     for _ in range(30):
         if page_count <= max_pages:
             break
-        if not selection_trim_exhausted(
-            current_selection,
-            min_project_entries=min_project_entries,
-            min_project_bullets=min_project_bullets,
-        ):
-            current_selection = trim_selection_one_step(
-                current_selection,
-                min_project_entries=min_project_entries,
-                min_project_bullets=min_project_bullets,
-            )
-        elif include_summary:
+        current_selection, progressed = _trim_static_one_step(current_selection)
+        if not progressed and include_summary:
             trimmed = trim_summary_one_step(current, sections=sections)
             if trimmed != current:
                 current = trimmed
-            else:
-                trim_stalled = page_count > max_pages
-                break
-        else:
+                progressed = True
+        if not progressed:
             trim_stalled = page_count > max_pages
             break
 
@@ -802,6 +822,7 @@ def _page_fit_diagnostics(
         "ai_char_count": fitted_chars,
         "ai_char_budget": max_chars,
         "trim_stalled": trim_stalled,
+        "trim_log": list(content_selection.get("trim_log", [])),
     }
 
 

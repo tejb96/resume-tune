@@ -9,7 +9,6 @@ import pytest
 
 from ai import enforce_skills_layout, skill_category_line_length
 from resume import build_resume, docx_to_html, fit_resume_to_page_budget, load_background
-from selection import validate_selection
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -55,45 +54,6 @@ def test_enforce_skills_layout_trims_line_to_max_chars() -> None:
     assert result
     line_len = skill_category_line_length(result[0]["name"], result[0]["skills"])
     assert line_len <= 40
-
-
-def test_validate_selection_truncates_four_projects_to_two() -> None:
-    background = {
-        "experience": [
-            {
-                "company": "Co",
-                "title": "Dev",
-                "start": "2020",
-                "end": "present",
-                "bullets": ["Did work"],
-            }
-        ],
-        "projects": [
-            {"name": "P1", "bullets": ["b1"]},
-            {"name": "P2", "bullets": ["b2"]},
-            {"name": "P3", "bullets": ["b3"]},
-            {"name": "P4", "bullets": ["b4"]},
-        ],
-    }
-    selection = {
-        "experience_selections": [{"role_index": 0, "bullet_indices": [0]}],
-        "project_selections": [
-            {"project_index": 0, "bullet_indices": [0]},
-            {"project_index": 1, "bullet_indices": [0]},
-            {"project_index": 2, "bullet_indices": [0]},
-            {"project_index": 3, "bullet_indices": [0]},
-        ],
-        "education_indices": [],
-    }
-    result = validate_selection(
-        selection,
-        background,
-        max_experience_entries=4,
-        max_project_entries=2,
-    )
-    assert len(result["project_selections"]) == 2
-    assert result["project_selections"][0]["project_index"] == 0
-    assert result["project_selections"][1]["project_index"] == 1
 
 
 def test_fit_resume_preserves_skills_while_trimming_static() -> None:

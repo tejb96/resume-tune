@@ -7,16 +7,19 @@ from unittest.mock import patch
 
 import pytest
 
+from ai import AIResponseError
 from resume import _prevent_orphan_word, build_resume, fit_resume_to_page_budget, load_background
 from selection import (
     apply_content_selection,
+    build_ratings_system_prompt,
     default_selection,
     enforce_project_floor,
     full_selection,
-    parse_selection_response,
+    parse_ratings_response,
+    selection_policy_from_limits,
     trim_selection_one_step,
-    validate_selection,
 )
+from scoring import build_selection_from_scores
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -26,55 +29,84 @@ def sample_background() -> dict:
     return load_background(ROOT / "background.example.md")
 
 
-def test_validate_selection_rejects_out_of_range_role_index(sample_background: dict) -> None:
-    with pytest.raises(ValueError, match="role_index 99 out of range"):
-        validate_selection(
-            {
-                "experience_selections": [{"role_index": 99, "bullet_indices": [0]}],
-                "project_selections": [],
-                "education_indices": [0],
-            },
-            sample_background,
-        )
-
-
-def test_validate_selection_rejects_out_of_range_bullet_index(sample_background: dict) -> None:
-    with pytest.raises(ValueError, match="bullet_index 99 out of range"):
-        validate_selection(
-            {
-                "experience_selections": [{"role_index": 0, "bullet_indices": [99]}],
-                "project_selections": [],
-                "education_indices": [0],
-            },
-            sample_background,
-        )
-
-
-def test_validate_selection_rejects_too_many_bullets_per_role(sample_background: dict) -> None:
-    with pytest.raises(ValueError, match="too many bullet_indices"):
-        validate_selection(
-            {
-                "experience_selections": [{"role_index": 0, "bullet_indices": [0, 1, 2, 3]}],
-                "project_selections": [],
-                "education_indices": [0],
-            },
-            sample_background,
-            max_bullets_per_role=3,
-        )
-
-
-def test_parse_selection_response_valid_json(sample_background: dict) -> None:
+def test_parse_ratings_response_valid_json(sample_background: dict) -> None:
     raw = """
     {
-      "experience_selections": [{"role_index": 0, "bullet_indices": [0, 1]}],
-      "project_selections": [{"project_index": 0, "bullet_indices": [0]}],
-      "education_indices": [0]
+      "roles": [5, 3],
+      "experience_bullets": [[5, 4, 2], [4, 3]],
+      "projects": [4],
+      "project_bullets": [[4]],
+      "education": [5]
     }
     """
-    selection = parse_selection_response(raw, sample_background)
-    assert selection["experience_selections"][0]["role_index"] == 0
-    assert selection["experience_selections"][0]["bullet_indices"] == [0, 1]
-    assert selection["education_indices"] == [0]
+    ratings = parse_ratings_response(raw, sample_background)
+    assert ratings.roles == {0: 5, 1: 3}
+    assert ratings.experience_bullets[(0, 2)] == 2
+    assert ratings.projects == {0: 4}
+    assert ratings.education == {0: 5}
+
+
+def test_parse_ratings_response_clamps_out_of_range(sample_background: dict) -> None:
+    raw = """
+    {
+      "roles": [9, 0],
+      "experience_bullets": [[5, 4, 2], [4, 3]],
+      "projects": [4],
+      "project_bullets": [[4]],
+      "education": [5]
+    }
+    """
+    ratings = parse_ratings_response(raw, sample_background)
+    assert ratings.roles == {0: 5, 1: 1}
+
+
+def test_parse_ratings_response_rejects_wrong_length(sample_background: dict) -> None:
+    raw = """
+    {
+      "roles": [5],
+      "experience_bullets": [[5, 4, 2], [4, 3]],
+      "projects": [4],
+      "project_bullets": [[4]],
+      "education": [5]
+    }
+    """
+    with pytest.raises(AIResponseError, match="exactly 2 ratings"):
+        parse_ratings_response(raw, sample_background)
+
+
+def test_parse_ratings_response_rejects_invalid_json(sample_background: dict) -> None:
+    with pytest.raises(AIResponseError, match="invalid JSON"):
+        parse_ratings_response("not json", sample_background)
+
+
+def test_ratings_build_selects_relevant_role_and_bullets(sample_background: dict) -> None:
+    raw = """
+    {
+      "roles": [2, 5],
+      "experience_bullets": [[3, 2, 1], [5, 4]],
+      "projects": [5],
+      "project_bullets": [[5]],
+      "education": [4]
+    }
+    """
+    ratings = parse_ratings_response(raw, sample_background)
+    selection = build_selection_from_scores(
+        sample_background,
+        ratings,
+        policy=selection_policy_from_limits(max_experience_entries=2, max_bullets_per_role=2),
+    )
+    role_indices = [e["role_index"] for e in selection["experience_selections"]]
+    assert role_indices[0] == 1
+    assert selection["project_selections"][0]["project_index"] == 0
+    assert "content_composites" in selection
+
+
+def test_ratings_prompt_lists_every_item_and_counts(sample_background: dict) -> None:
+    prompt = build_ratings_system_prompt(sample_background)
+    assert '"roles": [2 integers]' in prompt
+    assert '"experience_bullets": [[3 integers], [2 integers]]' in prompt
+    assert "Senior Software Engineer" in prompt
+    assert "B.S. Computer Science" in prompt
 
 
 def test_apply_content_selection_copies_bullets_verbatim(sample_background: dict) -> None:
@@ -275,6 +307,63 @@ def test_fit_resume_keeps_minimum_project_bullet() -> None:
     assert fitted_selection["project_selections"]
     assert fitted_selection["project_selections"][0]["bullet_indices"] == [0]
     assert diagnostics["trim_stalled"] is False
+
+
+def test_fit_resume_trims_lowest_composite_not_position() -> None:
+    """With score metadata, page fitting drops the least relevant bullet, not the last one."""
+    background = {
+        "header": {"name": "Test User", "email": "test@example.com"},
+        "experience": [
+            {
+                "company": "Co",
+                "title": "Engineer",
+                "start": "2020-01",
+                "end": "present",
+                "bullets": ["Most relevant bullet", "Weak bullet", "Strong closing bullet"],
+            }
+        ],
+        "education": [],
+        "projects": [{"name": "P", "bullets": ["Relevant project bullet"]}],
+        "certifications": [],
+    }
+    selection = {
+        "experience_selections": [{"role_index": 0, "bullet_indices": [0, 1, 2]}],
+        "project_selections": [{"project_index": 0, "bullet_indices": [0]}],
+        "education_indices": [],
+        "content_composites": {
+            "exp:0:0": 92.5,
+            "exp:0:1": 40.0,
+            "exp:0:2": 85.0,
+            "proj:0:0": 80.0,
+        },
+    }
+    call_count = {"n": 0}
+
+    def fake_page_count(_pdf: bytes) -> int:
+        call_count["n"] += 1
+        return 2 if call_count["n"] == 1 else 1
+
+    with patch("resume.docx_to_pdf", return_value=b"%PDF-fake"):
+        with patch("resume.pdf_page_count", side_effect=fake_page_count):
+            _ai, fitted_selection, _docx, _pdf, page_count, diagnostics = (
+                fit_resume_to_page_budget(
+                    background,
+                    {"summary": "", "skill_categories": []},
+                    max_pages=1,
+                    sections=["experience", "projects"],
+                    content_selection=selection,
+                    min_project_entries=1,
+                    min_project_bullets=1,
+                )
+            )
+
+    assert page_count == 1
+    # The mid-position low-composite bullet is removed; positional trim would drop index 2.
+    assert fitted_selection["experience_selections"][0]["bullet_indices"] == [0, 2]
+    # The project is at its floor and protected even though scored below experience.
+    assert fitted_selection["project_selections"][0]["bullet_indices"] == [0]
+    assert diagnostics["trim_log"]
+    assert diagnostics["trim_log"][0]["removed"] == "exp:0:1"
 
 
 def test_build_resume_with_selection_excludes_unselected_bullets(sample_background: dict) -> None:
