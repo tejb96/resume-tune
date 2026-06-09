@@ -175,8 +175,8 @@ def _render_experience_section(
     experience = data.get("experience", [])
     if experience:
         _add_section_heading(doc, "Experience")
-        for job in experience:
-            _add_experience_entry(doc, job)
+        for i, job in enumerate(experience):
+            _add_experience_entry(doc, job, is_first=(i == 0))
 
 
 def _render_education_section(
@@ -366,8 +366,8 @@ def _add_header(doc: Document, header: dict[str, Any]) -> None:
     name_run = name_p.add_run(header["name"])
     _format_run(name_run, bold=True, size=FONT_NAME_SIZE)
 
+    email = header.get("email")
     contact_parts = [
-        header.get("email"),
         header.get("phone"),
         header.get("location"),
     ]
@@ -376,12 +376,16 @@ def _add_header(doc: Document, header: dict[str, Any]) -> None:
     valid_links = [
         link for link in links if link.get("label") and link.get("url")
     ]
-    if contact_values or valid_links:
+    if email or contact_values or valid_links:
         meta_p = doc.add_paragraph()
         meta_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
         meta_p.paragraph_format.space_after = Pt(8)
 
         first = True
+        if email:
+            _add_hyperlink(meta_p, f"mailto:{email}", email)
+            first = False
+
         for part in contact_values:
             if not first:
                 sep_run = meta_p.add_run(" | ")
@@ -415,8 +419,6 @@ def _add_skill_categories(doc: Document, skill_categories: list[dict[str, Any]])
         text_run = p.add_run(skills_text)
         _format_run(text_run)
 
-    doc.add_paragraph().paragraph_format.space_after = Pt(2)
-
 
 def _normalize_date(value: str) -> str:
     if value.lower() == "present":
@@ -428,9 +430,11 @@ def _format_date_range(start: str, end: str) -> str:
     return f"{_normalize_date(start)} – {_normalize_date(end)}"
 
 
-def _add_experience_entry(doc: Document, job: dict[str, Any]) -> None:
+def _add_experience_entry(
+    doc: Document, job: dict[str, Any], *, is_first: bool = False
+) -> None:
     title_line = doc.add_paragraph()
-    title_line.paragraph_format.space_before = Pt(5)
+    title_line.paragraph_format.space_before = Pt(0 if is_first else 5)
     title_line.paragraph_format.space_after = Pt(0)
 
     role_run = title_line.add_run(job["title"])
@@ -466,20 +470,17 @@ def _add_experience_entry(doc: Document, job: dict[str, Any]) -> None:
 def _add_education_entry(doc: Document, entry: dict[str, Any]) -> None:
     line = doc.add_paragraph()
     line.paragraph_format.space_before = Pt(2)
-    line.paragraph_format.space_after = Pt(1)
+    line.paragraph_format.space_after = Pt(4)
     inst_run = line.add_run(entry["institution"])
     _format_run(inst_run, bold=True)
     if entry.get("location"):
         loc_run = line.add_run(f" — {entry['location']}")
         _format_run(loc_run)
-
-    detail_p = doc.add_paragraph()
-    detail_p.paragraph_format.space_after = Pt(4)
-    detail = entry["degree"]
+    degree_run = line.add_run(f" | {entry['degree']}")
+    _format_run(degree_run)
     if entry.get("graduation"):
-        detail += f" | {entry['graduation']}"
-    detail_run = detail_p.add_run(detail)
-    _format_run(detail_run)
+        grad_run = line.add_run(f" | {entry['graduation']}")
+        _format_run(grad_run)
 
 
 def _add_certification_entry(doc: Document, cert: dict[str, Any]) -> None:
@@ -506,15 +507,15 @@ def _add_project_entry(doc: Document, project: dict[str, Any]) -> None:
     name_run = title_p.add_run(project["name"])
     _format_run(name_run, bold=True)
 
+    if project.get("url"):
+        url_sep = title_p.add_run("  —  ")
+        _format_run(url_sep, size=Pt(9.5), color=META_COLOR)
+        _add_hyperlink(title_p, project["url"], project["url"])
+
     tech = project.get("tech") or project.get("stack")
     if tech:
         tech_run = title_p.add_run(f"  —  {tech}")
         _format_run(tech_run, size=Pt(9.5), color=META_COLOR)
-
-    if project.get("url"):
-        url_p = doc.add_paragraph()
-        url_p.paragraph_format.space_after = Pt(1)
-        _add_hyperlink(url_p, project["url"], project["url"])
 
     for bullet in project.get("bullets", []):
         _add_bullet(doc, bullet)
