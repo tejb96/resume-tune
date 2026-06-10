@@ -49,8 +49,7 @@ MARGIN_TB = Inches(0.5)
 MARGIN_LR = Inches(0.5)
 SECTION_SPACING_BEFORE = Pt(7)
 SECTION_SPACING_AFTER = Pt(3)
-BULLET_INDENT = Inches(0.22)
-BULLET_HANGING = Inches(0.15)
+BULLET_TEXT_INDENT = Inches(0.25)
 
 ACCENT_COLOR = RGBColor(0x1A, 0x56, 0x8C)
 RULE_COLOR_HEX = "1A568C"
@@ -415,6 +414,14 @@ def _add_header(doc: Document, header: dict[str, Any]) -> None:
             first = False
 
 
+def _configure_bullet_paragraph(p) -> None:
+    """Hanging indent so wrapped lines align with the first line's text column."""
+    fmt = p.paragraph_format
+    fmt.left_indent = BULLET_TEXT_INDENT
+    fmt.first_line_indent = -BULLET_TEXT_INDENT
+    fmt.tab_stops.add_tab_stop(BULLET_TEXT_INDENT)
+
+
 def _add_skill_categories(doc: Document, skill_categories: list[dict[str, Any]]) -> None:
     """Render one bullet per skill category with comma-joined skills."""
     if not skill_categories:
@@ -423,10 +430,11 @@ def _add_skill_categories(doc: Document, skill_categories: list[dict[str, Any]])
     for cat in skill_categories:
         skills_text = ", ".join(cat["skills"])
         p = doc.add_paragraph()
+        _configure_bullet_paragraph(p)
         p.paragraph_format.space_after = Pt(2)
-        p.paragraph_format.left_indent = Inches(0.05)
-        bullet_run = p.add_run("▪  ")
+        bullet_run = p.add_run("▪")
         _format_run(bullet_run, color=ACCENT_COLOR)
+        p.add_run("\t")
         name_run = p.add_run(f"{cat['name']}: ")
         _format_run(name_run, bold=True)
         text_run = p.add_run(skills_text)
@@ -545,13 +553,13 @@ def _prevent_orphan_word(text: str) -> str:
 
 def _add_bullet(doc: Document, text: str) -> None:
     p = doc.add_paragraph()
-    p.paragraph_format.left_indent = BULLET_INDENT
-    p.paragraph_format.first_line_indent = -BULLET_HANGING
+    _configure_bullet_paragraph(p)
     p.paragraph_format.space_after = Pt(1)
     pPr = p._p.get_or_add_pPr()
     pPr.append(OxmlElement("w:widowControl"))
-    bullet_run = p.add_run("▪  ")
+    bullet_run = p.add_run("▪")
     _format_run(bullet_run, color=ACCENT_COLOR)
+    p.add_run("\t")
     text_run = p.add_run(_prevent_orphan_word(text))
     _format_run(text_run)
 
