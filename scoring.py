@@ -136,18 +136,24 @@ def heuristic_ratings(background_data: dict[str, Any]) -> ContentRatings:
     return ratings
 
 
-def _rating_list(value: Any, *, label: str, expected: int) -> list[int]:
+def _rating_list(
+    value: Any,
+    *,
+    label: str,
+    expected: int,
+    default: int = 3,
+) -> list[int]:
     if value is None and expected == 0:
         return []
     if not isinstance(value, list):
         raise ValueError(f"'{label}' must be a list of ratings")
-    if len(value) != expected:
-        raise ValueError(f"'{label}' must contain exactly {expected} ratings, got {len(value)}")
     ratings: list[int] = []
-    for raw in value:
+    for raw in value[:expected]:
         if isinstance(raw, bool) or not isinstance(raw, (int, float)):
             raise ValueError(f"'{label}' ratings must be numbers between 1 and 5")
         ratings.append(clamp_rating(round(raw)))
+    while len(ratings) < expected:
+        ratings.append(clamp_rating(default))
     return ratings
 
 

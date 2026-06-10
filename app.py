@@ -20,6 +20,7 @@ from ai import (
     read_background_text,
     revise_tailored_content,
 )
+from ats import analyze_ats_compatibility
 from resume import (
     build_resume_artifacts,
     libreoffice_available,
@@ -123,6 +124,7 @@ def apply_artifacts_to_result(
     result["skill_categories"] = fitted["skill_categories"]
     result["content_selection"] = artifacts["content_selection"]
     result["diagnostics"] = artifacts["diagnostics"]
+    result.pop("ats", None)
     if skill_warnings is not None:
         result["skill_warnings"] = skill_warnings
     result["docx_bytes"] = artifacts["docx_bytes"]
@@ -270,6 +272,139 @@ def render_page_fit_diagnostic(
             )
 
 
+def run_ats_check(
+    background_data: dict,
+    result: dict,
+    job_description: str,
+    *,
+    sections: list[str],
+    max_certifications: int | None,
+) -> dict | None:
+    """Run on-demand ATS analysis against the current resume preview."""
+    jd = job_description.strip()
+    if not jd:
+        return None
+
+    ai_output = {
+        "summary": result.get("summary", ""),
+        "skill_categories": result.get("skill_categories", []),
+    }
+    report = analyze_ats_compatibility(
+        job_description=jd,
+        background_data=background_data,
+        ai_output=ai_output,
+        pdf_bytes=result.get("pdf_bytes"),
+        sections=sections,
+        content_selection=result.get("content_selection"),
+        max_certifications=max_certifications,
+    )
+    return report.to_dict() if report is not None else None
+
+
+def render_ats_section(
+    result: dict,
+    background_data: dict,
+    job_description: str,
+    *,
+    sections: list[str],
+    max_certifications: int | None,
+    enable_ats_compat: bool,
+) -> None:
+    """On-demand ATS check button and results panel."""
+    if not enable_ats_compat:
+        return
+
+    jd = (result.get("job_description") or job_description).strip()
+    st.divider()
+    st.caption("ATS compatibility (optional)")
+    run_disabled = not jd
+    if st.button(
+        "Run ATS check",
+        use_container_width=True,
+        disabled=run_disabled,
+        help="Paste a job description above, then run a deterministic keyword and parse check.",
+    ):
+        with st.spinner("Running ATS check..."):
+            ats = run_ats_check(
+                background_data,
+                result,
+                jd,
+                sections=sections,
+                max_certifications=max_certifications,
+            )
+            if ats is None:
+                st.warning("Paste a job description to run an ATS check.")
+            else:
+                result["ats"] = ats
+                result["job_description"] = jd
+                st.session_state.result = result
+                st.rerun()
+
+    if run_disabled:
+        st.caption("Paste a job description above to enable ATS check.")
+    elif not result.get("ats"):
+        st.caption("Optional — run when you're happy with the preview. Re-run after revisions.")
+
+    ats = result.get("ats")
+    if not ats:
+        return
+
+    pct = ats.get("keyword_match_pct", 0)
+    expand = pct < 50 or (
+        ats.get("pdf_fidelity") and ats["pdf_fidelity"].get("fidelity_score", 100) < 80
+    )
+
+    with st.expander(f"ATS compatibility — {pct:.0f}% keyword match", expanded=expand):
+        jd_keywords = ats.get("jd_keywords") or []
+        matched = ats.get("matched_keywords") or []
+        missing = ats.get("missing_keywords") or []
+
+        if not jd_keywords:
+            st.caption("No tech keywords detected in the job description.")
+        else:
+            st.caption(f"Keywords: **{len(matched)}** / **{len(jd_keywords)}** matched")
+            if missing:
+                st.caption(f"Missing: {', '.join(missing)}")
+
+        sections_found = ats.get("sections_found") or []
+        sections_missing = ats.get("sections_missing") or []
+        if sections_found:
+            st.caption(f"Sections found: {', '.join(sections_found)}")
+        if sections_missing:
+            st.caption(f"Sections missing: {', '.join(sections_missing)}")
+
+        contact = ats.get("contact") or {}
+        contact_parts = []
+        for label, key in (
+            ("email", "email_found"),
+            ("phone", "phone_found"),
+            ("LinkedIn", "linkedin_found"),
+            ("GitHub", "github_found"),
+        ):
+            mark = "✓" if contact.get(key) else "✗"
+            contact_parts.append(f"{label} {mark}")
+        st.caption("Contact: " + "  ".join(contact_parts))
+
+        source = ats.get("resume_text_source", "flattened")
+        fidelity = ats.get("pdf_fidelity")
+        if fidelity:
+            score = fidelity.get("fidelity_score", 0)
+            st.caption(f"PDF fidelity: **{score:.0f}%** (keyword match scored on PDF text)")
+            checks = []
+            if fidelity.get("name_in_pdf") is not None:
+                checks.append(f"Name {'✓' if fidelity['name_in_pdf'] else '✗'}")
+            if fidelity.get("email_in_pdf") is not None:
+                checks.append(f"Email {'✓' if fidelity['email_in_pdf'] else '✗'}")
+            for section_id, found in (fidelity.get("sections_in_pdf") or {}).items():
+                checks.append(f"{section_id} {'✓' if found else '✗'}")
+            if checks:
+                st.caption("PDF checks: " + "  ".join(checks))
+        elif source == "flattened":
+            st.caption(
+                "PDF fidelity unavailable — install LibreOffice for PDF text extraction checks."
+            )
+
+
 def render_save_section(result: dict, output_dir: Path) -> None:
     st.subheader("Save")
     save_col_docx, save_col_pdf = st.columns(2)
@@ -343,6 +478,7 @@ default_model = config.get("model_name", "")
 max_chars = config.get("ai_output_max_chars", DEFAULT_AI_OUTPUT_MAX_CHARS)
 max_pages = int(config.get("max_resume_pages", 2))
 enable_job_aware_selection = bool(config.get("enable_job_aware_selection", False))
+enable_ats_compat = bool(config.get("enable_ats_compat", True))
 auto_fill_page_budget = bool(config.get("auto_fill_page_budget", True))
 overflow_warning_min_composite = float(config.get("overflow_warning_min_composite", 75.0))
 min_project_entries = int(config.get("min_project_entries", 1))
@@ -703,6 +839,14 @@ else:
             include_summary=preview_include_summary,
             include_skills=preview_include_skills,
             enable_job_aware_selection=enable_job_aware_selection and not result.get("preview_mode"),
+        )
+        render_ats_section(
+            result,
+            background_data,
+            job_description,
+            sections=preview_sections,
+            max_certifications=max_certifications,
+            enable_ats_compat=enable_ats_compat,
         )
 
     with right_col:

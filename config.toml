@@ -14,6 +14,8 @@ auto_fill_page_budget = true
 overflow_warning_min_composite = 75
 # Job-aware bullet selection from background.md (requires LLM when true).
 enable_job_aware_selection = true
+# Deterministic ATS keyword/section/contact checks (no LLM).
+enable_ats_compat = true
 min_project_entries = 1
 min_project_bullets = 1
 # Skills layout (enforced at generation — never trimmed during page fitting).

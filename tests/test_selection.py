@@ -60,18 +60,21 @@ def test_parse_ratings_response_clamps_out_of_range(sample_background: dict) -> 
     assert ratings.roles == {0: 5, 1: 1}
 
 
-def test_parse_ratings_response_rejects_wrong_length(sample_background: dict) -> None:
+def test_parse_ratings_response_pads_short_ratings(sample_background: dict) -> None:
     raw = """
     {
       "roles": [5],
-      "experience_bullets": [[5, 4, 2], [4, 3]],
+      "experience_bullets": [[5, 4], [4, 3]],
       "projects": [4],
       "project_bullets": [[4]],
       "education": [5]
     }
     """
-    with pytest.raises(AIResponseError, match="exactly 2 ratings"):
-        parse_ratings_response(raw, sample_background)
+    ratings = parse_ratings_response(raw, sample_background)
+    assert ratings.roles == {0: 5, 1: 3}
+    assert ratings.experience_bullets[(0, 0)] == 5
+    assert ratings.experience_bullets[(0, 1)] == 4
+    assert ratings.experience_bullets[(0, 2)] == 3
 
 
 def test_parse_ratings_response_rejects_invalid_json(sample_background: dict) -> None:

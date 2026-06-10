@@ -70,6 +70,7 @@ def load_settings() -> dict:
         "resume_sections": resolve_resume_sections(config.get("resume_sections")),
         "max_resume_pages": int(config.get("max_resume_pages", 2)),
         "enable_job_aware_selection": bool(config.get("enable_job_aware_selection", False)),
+        "enable_ats_compat": bool(config.get("enable_ats_compat", True)),
         "auto_fill_page_budget": bool(config.get("auto_fill_page_budget", True)),
         "overflow_warning_min_composite": float(
             config.get("overflow_warning_min_composite", 75.0)

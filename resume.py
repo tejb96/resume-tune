@@ -237,15 +237,25 @@ _SECTION_RENDERERS: dict[str, Any] = {
 }
 
 
-def build_resume(
+_SECTION_HEADING_LABELS: dict[str, str] = {
+    "summary": "PROFESSIONAL SUMMARY",
+    "skills": "SKILLS",
+    "experience": "EXPERIENCE",
+    "education": "EDUCATION",
+    "projects": "PROJECTS",
+    "certifications": "CERTIFICATIONS",
+}
+
+
+def _prepare_render_data(
     data: dict[str, Any],
     ai_output: dict[str, Any],
     *,
     sections: list[str] | None = None,
     content_selection: dict[str, Any] | None = None,
     max_certifications: int | None = None,
-) -> bytes:
-    """Merge structured background + AI fields, return DOCX bytes."""
+) -> tuple[dict[str, Any], dict[str, Any], list[str], bool, bool]:
+    """Shared prep for build_resume and flatten_resume_text."""
     render_data = (
         apply_content_selection(data, content_selection)
         if content_selection is not None
@@ -262,6 +272,150 @@ def build_resume(
         ai_output,
         include_summary=include_summary,
         include_skills=include_skills,
+    )
+    return render_data, normalized, resolved_sections, include_summary, include_skills
+
+
+def _flatten_header(header: dict[str, Any]) -> list[str]:
+    lines = [header["name"]]
+    email = header.get("email")
+    contact_parts = [header.get("phone"), header.get("location")]
+    contact_values = [p for p in contact_parts if p]
+    links = header.get("links") or []
+    valid_links = [link for link in links if link.get("label") and link.get("url")]
+
+    meta_parts: list[str] = []
+    if email:
+        meta_parts.append(email)
+    meta_parts.extend(contact_values)
+    meta_parts.extend(link["label"] for link in valid_links)
+    if meta_parts:
+        lines.append(" | ".join(meta_parts))
+    return lines
+
+
+def _flatten_experience_entry(job: dict[str, Any]) -> list[str]:
+    parts = [job["title"], job["company"]]
+    if job.get("location"):
+        parts.append(job["location"])
+    header = "  ·  ".join(parts)
+    header += f"\t{_format_date_range(job['start'], job['end'])}"
+    lines = [header]
+    lines.extend(f"▪ {bullet}" for bullet in job["bullets"])
+    return lines
+
+
+def _flatten_education_entry(entry: dict[str, Any]) -> list[str]:
+    parts = [entry["institution"]]
+    if entry.get("location"):
+        parts.append(entry["location"])
+    line = " — ".join(parts)
+    line += f" | {entry['degree']}"
+    if entry.get("graduation"):
+        line += f" | {entry['graduation']}"
+    return [line]
+
+
+def _flatten_certification_entry(cert: dict[str, Any]) -> list[str]:
+    extras = []
+    if cert.get("issuer"):
+        extras.append(cert["issuer"])
+    if cert.get("date"):
+        extras.append(str(cert["date"]))
+    line = cert["name"]
+    if extras:
+        line += f" — {', '.join(extras)}"
+    return [line]
+
+
+def _flatten_project_entry(project: dict[str, Any]) -> list[str]:
+    line = project["name"]
+    if project.get("url"):
+        line += f"  —  {project['url']}"
+    tech = project.get("tech") or project.get("stack")
+    if tech:
+        line += f"  —  {tech}"
+    lines = [line]
+    lines.extend(f"▪ {bullet}" for bullet in project.get("bullets", []))
+    return lines
+
+
+def flatten_resume_text(
+    data: dict[str, Any],
+    ai_output: dict[str, Any],
+    *,
+    sections: list[str] | None = None,
+    content_selection: dict[str, Any] | None = None,
+    max_certifications: int | None = None,
+) -> str:
+    """Render resume as plain text mirroring DOCX output for ATS analysis."""
+    render_data, normalized, resolved_sections, include_summary, include_skills = (
+        _prepare_render_data(
+            data,
+            ai_output,
+            sections=sections,
+            content_selection=content_selection,
+            max_certifications=max_certifications,
+        )
+    )
+
+    lines = _flatten_header(render_data["header"])
+
+    for section_id in resolved_sections:
+        if section_id == "summary":
+            if include_summary and normalized.get("summary"):
+                lines.append(_SECTION_HEADING_LABELS["summary"])
+                lines.append(normalized["summary"])
+        elif section_id == "skills":
+            categories = normalized.get("skill_categories") or []
+            if include_skills and categories:
+                lines.append(_SECTION_HEADING_LABELS["skills"])
+                for cat in categories:
+                    skills_text = ", ".join(cat["skills"])
+                    lines.append(f"▪ {cat['name']}: {skills_text}")
+        elif section_id == "experience":
+            experience = render_data.get("experience", [])
+            if experience:
+                lines.append(_SECTION_HEADING_LABELS["experience"])
+                for job in experience:
+                    lines.extend(_flatten_experience_entry(job))
+        elif section_id == "education":
+            education = render_data.get("education", [])
+            if education:
+                lines.append(_SECTION_HEADING_LABELS["education"])
+                for entry in education:
+                    lines.extend(_flatten_education_entry(entry))
+        elif section_id == "projects":
+            projects = render_data.get("projects", [])
+            if projects:
+                lines.append(_SECTION_HEADING_LABELS["projects"])
+                for project in projects:
+                    lines.extend(_flatten_project_entry(project))
+        elif section_id == "certifications":
+            certifications = render_data.get("certifications", [])
+            if certifications:
+                lines.append(_SECTION_HEADING_LABELS["certifications"])
+                for cert in certifications:
+                    lines.extend(_flatten_certification_entry(cert))
+
+    return "\n".join(lines)
+
+
+def build_resume(
+    data: dict[str, Any],
+    ai_output: dict[str, Any],
+    *,
+    sections: list[str] | None = None,
+    content_selection: dict[str, Any] | None = None,
+    max_certifications: int | None = None,
+) -> bytes:
+    """Merge structured background + AI fields, return DOCX bytes."""
+    render_data, normalized, resolved_sections, _, _ = _prepare_render_data(
+        data,
+        ai_output,
+        sections=sections,
+        content_selection=content_selection,
+        max_certifications=max_certifications,
     )
 
     doc = Document()
@@ -653,6 +807,12 @@ def pdf_page_count(pdf_bytes: bytes) -> int:
     return len(PdfReader(io.BytesIO(pdf_bytes)).pages)
 
 
+def extract_pdf_text(pdf_bytes: bytes) -> str:
+    """Extract plain text from PDF bytes using pypdf."""
+    reader = PdfReader(io.BytesIO(pdf_bytes))
+    return "".join(page.extract_text() or "" for page in reader.pages)
+
+
 def trim_summary_one_step(
     ai_output: dict[str, Any],
     *,
@@ -938,6 +1098,7 @@ def build_resume_artifacts(
             overflow_warning_min_composite=overflow_warning_min_composite,
         )
     )
+
     return {
         "ai_output": fitted_output,
         "content_selection": fitted_selection,
