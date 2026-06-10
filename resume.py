@@ -155,6 +155,11 @@ def validate_background(metadata: dict[str, Any]) -> dict[str, Any]:
     if links is not None and not isinstance(links, list):
         raise ValueError("background.md: header.links must be a list")
 
+    if "skills_map" in metadata:
+        from skills_map import validate_skills_map
+
+        metadata["skills_map"] = validate_skills_map(metadata["skills_map"])
+
     return metadata
 
 
@@ -372,7 +377,11 @@ def flatten_resume_text(
                 lines.append(_SECTION_HEADING_LABELS["skills"])
                 for cat in categories:
                     skills_text = ", ".join(cat["skills"])
-                    lines.append(f"▪ {cat['name']}: {skills_text}")
+                    name = (cat.get("name") or "").strip()
+                    if name:
+                        lines.append(f"▪ {name}: {skills_text}")
+                    else:
+                        lines.append(f"▪ {skills_text}")
         elif section_id == "experience":
             experience = render_data.get("experience", [])
             if experience:
@@ -589,8 +598,10 @@ def _add_skill_categories(doc: Document, skill_categories: list[dict[str, Any]])
         bullet_run = p.add_run("▪")
         _format_run(bullet_run, color=ACCENT_COLOR)
         p.add_run("\t")
-        name_run = p.add_run(f"{cat['name']}: ")
-        _format_run(name_run, bold=True)
+        name = (cat.get("name") or "").strip()
+        if name:
+            name_run = p.add_run(f"{name}: ")
+            _format_run(name_run, bold=True)
         text_run = p.add_run(skills_text)
         _format_run(text_run)
 

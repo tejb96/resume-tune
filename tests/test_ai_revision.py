@@ -70,8 +70,8 @@ def test_filter_skill_categories_drops_unknown() -> None:
     categories = [
         {"name": "Testing", "skills": ["Jest", "Python"]},
     ]
-    background = "Technologies: Python, Go, AWS"
-    filtered, dropped = filter_skill_categories(categories, background)
+    skills_map = {"languages": ["Python", "Go"]}
+    filtered, dropped = filter_skill_categories(categories, skills_map)
     assert dropped == ["Jest"]
     assert filtered == [{"name": "Testing", "skills": ["Python"]}]
 
@@ -100,13 +100,18 @@ def test_revise_tailored_content_calls_model_and_returns_json() -> None:
     mock_client = MagicMock()
     mock_client.chat.completions.create.return_value = mock_response
 
-    passthrough_packer = lambda cats, *_a, **_k: (
+    passthrough_guard = lambda cats, *_a, **_k: (
         cats,
-        {"added_skills": [], "line_utilization": []},
+        {
+            "removed_skills": [],
+            "deduped_skills": [],
+            "added_skills": [],
+            "line_utilization": [],
+        },
     )
     with (
         patch("ai.OpenAI", return_value=mock_client),
-        patch("ai.pack_skill_lines", side_effect=passthrough_packer),
+        patch("ai.apply_skills_guardrails", side_effect=passthrough_guard),
     ):
         result, warnings, _packer = revise_tailored_content(
             "Backend engineer role",
@@ -171,13 +176,18 @@ def test_revise_tailored_content_retries_on_invalid_json() -> None:
         mock_response_good,
     ]
 
-    passthrough_packer = lambda cats, *_a, **_k: (
+    passthrough_guard = lambda cats, *_a, **_k: (
         cats,
-        {"added_skills": [], "line_utilization": []},
+        {
+            "removed_skills": [],
+            "deduped_skills": [],
+            "added_skills": [],
+            "line_utilization": [],
+        },
     )
     with (
         patch("ai.OpenAI", return_value=mock_client),
-        patch("ai.pack_skill_lines", side_effect=passthrough_packer),
+        patch("ai.apply_skills_guardrails", side_effect=passthrough_guard),
     ):
         result, _warnings, _packer = revise_tailored_content(
             "Job description",

@@ -17,9 +17,9 @@ from ai import (
     format_skill_categories,
     generate_tailored_content,
     parse_skill_categories,
-    read_background_text,
     revise_tailored_content,
 )
+from skills_map import load_skills_map
 from ats import analyze_ats_compatibility
 from resume import (
     build_resume_artifacts,
@@ -276,18 +276,24 @@ def render_page_fit_diagnostic(
 
 
 def render_skill_packer_diagnostic(packer_info: dict | None) -> None:
-    """Show line-capacity packing results in the sidebar."""
+    """Show skills guardrail results in the sidebar."""
     if not packer_info:
         return
+    removed = packer_info.get("removed_skills") or []
+    deduped = packer_info.get("deduped_skills") or []
     added = packer_info.get("added_skills") or []
     lines = packer_info.get("line_utilization") or []
-    if not added and not lines:
+    if not removed and not deduped and not added and not lines:
         return
-    with st.expander("Skills line packing", expanded=bool(added)):
+    with st.expander("Skills guardrails", expanded=bool(removed or deduped or added)):
+        if removed:
+            st.caption("Removed (not in skills_map): **" + ", ".join(removed) + "**")
+        if deduped:
+            st.caption("Deduped: **" + ", ".join(deduped) + "**")
         if added:
-            st.caption("Auto-added to fill line capacity: **" + ", ".join(added) + "**")
+            st.caption("Same-bucket top-up: **" + ", ".join(added) + "**")
         for line in lines:
-            name = line.get("name", "")
+            name = line.get("name", "") or "(unnamed)"
             chars = line.get("chars", 0)
             max_chars = line.get("max", 0)
             st.caption(f"{name}: **{chars}** / **{max_chars}** characters")
@@ -638,6 +644,8 @@ if generate:
                     )
             else:
                 ai_output, skill_warnings, skill_packer_info = dict(EMPTY_AI_OUTPUT), [], {
+                    "removed_skills": [],
+                    "deduped_skills": [],
                     "added_skills": [],
                     "line_utilization": [],
                 }
@@ -810,29 +818,34 @@ else:
                     elif include_skills and not manual_categories:
                         apply_error = "Add at least one skill category (e.g. Languages: Python, Go)."
                     elif include_skills:
-                        background_text = read_background_text(background_path)
-                        filtered, dropped = filter_skill_categories(
-                            manual_categories,
-                            background_text,
-                        )
-                        if dropped:
+                        skills_map = load_skills_map(background_path)
+                        if not skills_map:
                             apply_error = (
-                                "Skills not found in your background file: "
-                                + ", ".join(dropped)
+                                "background.md must define skills_map or ## Core strengths bullets."
                             )
-                        elif not filtered:
-                            apply_error = "No valid skills remain after background check."
                         else:
-                            filtered, skill_packer_info = finalize_manual_skills(
-                                filtered,
-                                background_text,
-                                result.get("job_description", job_description),
-                                **skills_layout_kwargs(),
+                            filtered, dropped = filter_skill_categories(
+                                manual_categories,
+                                skills_map,
                             )
-                            if not filtered:
+                            if dropped:
                                 apply_error = (
-                                    "Skills could not fit the configured one-line layout limits."
+                                    "Skills not in skills_map: " + ", ".join(dropped)
                                 )
+                            elif not filtered:
+                                apply_error = "No valid skills remain after skills_map check."
+                            else:
+                                filtered, skill_packer_info = finalize_manual_skills(
+                                    filtered,
+                                    skills_map,
+                                    result.get("job_description", job_description),
+                                    **skills_layout_kwargs(),
+                                )
+                                if not filtered:
+                                    apply_error = (
+                                        "Skills could not fit the configured one-line "
+                                        "layout limits."
+                                    )
 
                     if apply_error:
                         st.error(apply_error)

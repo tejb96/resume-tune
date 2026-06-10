@@ -48,6 +48,29 @@ projects:
     tech: "Python · Streamlit · python-docx · Ollama"
     bullets:
       - "Local Streamlit app that tailors resume content via Ollama and exports DOCX"
+
+skills_map:
+  languages:
+    - Python
+    - Go
+    - SQL
+  backend:
+    - Python
+    - Go
+    - FastAPI
+    - REST APIs
+  infrastructure:
+    - AWS
+    - Docker
+    - Kubernetes
+    - Terraform
+    - GitHub Actions
+    - PostgreSQL
+    - Redis
+  tools:
+    - Git
+    - Prometheus
+    - Grafana
 ---
 # Career context (AI-only — not rendered in DOCX)
 

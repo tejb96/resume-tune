@@ -11,10 +11,10 @@ import pytest
 from ai import (
     EMPTY_AI_OUTPUT,
     ai_output_char_count,
+    apply_skills_guardrails,
     enforce_output_budget,
     generate_tailored_content,
     normalize_ai_output,
-    pack_skill_lines,
     parse_response,
     revise_tailored_content,
     skills_subject_to_char_budget,
@@ -92,35 +92,21 @@ def test_skills_only_excluded_from_char_budget() -> None:
     assert trimmed["skill_categories"] == categories
 
 
-def test_pack_skill_lines_fills_missing_git() -> None:
-    background = "Other tools: Git, Linux, Jira. Experience with Python and Docker."
-    categories = [
-        {"name": "Backend", "skills": ["Python", "Docker"]},
-    ]
+def test_apply_skills_guardrails_topup_tools_bucket() -> None:
+    skills_map = {
+        "cloud_devops": ["Python", "Docker"],
+        "tools": ["Git", "Agile", "Jira"],
+    }
+    categories = [{"name": "Cloud", "skills": ["Python", "Docker"]}]
     jd = "Looking for Python, Docker, and Git experience."
-    packed, info = pack_skill_lines(
+    guarded, info = apply_skills_guardrails(
         categories,
-        background,
+        skills_map,
         jd,
         max_chars_per_line=88,
     )
-    all_skills = [s for cat in packed for s in cat["skills"]]
-    assert "Git" in all_skills
-    assert "Git" in info["added_skills"]
-
-
-def test_pack_skill_lines_prefers_tailwind_css_label() -> None:
-    background = "Full stack: React, Tailwind, Tailwind CSS, TypeScript."
-    categories = [{"name": "Frontend", "skills": ["React", "TypeScript"]}]
-    jd = "Requires React, TypeScript, and Tailwind CSS."
-    packed, info = pack_skill_lines(
-        categories,
-        background,
-        jd,
-        max_chars_per_line=88,
-    )
-    all_skills = [s for cat in packed for s in cat["skills"]]
-    assert "Tailwind CSS" in all_skills
+    all_skills = [s for cat in guarded for s in cat["skills"]]
+    assert "Git" not in all_skills
 
 
 def test_trim_summary_one_step_skips_skills() -> None:
@@ -152,7 +138,7 @@ def test_generate_tailored_content_skips_llm_when_both_excluded() -> None:
     mock_openai.assert_not_called()
     assert ai_output == EMPTY_AI_OUTPUT
     assert warnings == []
-    assert packer == {"added_skills": [], "line_utilization": []}
+    assert packer["added_skills"] == []
 
 
 def test_generate_tailored_content_skills_only_uses_skills_prompt() -> None:
@@ -171,13 +157,18 @@ def test_generate_tailored_content_skills_only_uses_skills_prompt() -> None:
     mock_client = MagicMock()
     mock_client.chat.completions.create.return_value = mock_response
 
-    passthrough_packer = lambda cats, *_a, **_k: (
+    passthrough_guard = lambda cats, *_a, **_k: (
         cats,
-        {"added_skills": [], "line_utilization": []},
+        {
+            "removed_skills": [],
+            "deduped_skills": [],
+            "added_skills": [],
+            "line_utilization": [],
+        },
     )
     with (
         patch("ai.OpenAI", return_value=mock_client),
-        patch("ai.pack_skill_lines", side_effect=passthrough_packer),
+        patch("ai.apply_skills_guardrails", side_effect=passthrough_guard),
     ):
         ai_output, _warnings, _packer = generate_tailored_content(
             "Backend role",
@@ -192,7 +183,7 @@ def test_generate_tailored_content_skills_only_uses_skills_prompt() -> None:
         "content"
     ]
     assert '"summary"' not in system_prompt
-    assert "LINE CAPACITY" in system_prompt
+    assert "ALLOWED SKILLS" in system_prompt
     assert "skill_categories" in system_prompt
     assert ai_output["summary"] == ""
     assert ai_output["skill_categories"][0]["skills"] == ["Python", "Go"]
@@ -249,13 +240,18 @@ def test_revise_tailored_content_skills_only_preserves_summary() -> None:
     mock_client = MagicMock()
     mock_client.chat.completions.create.return_value = mock_response
 
-    passthrough_packer = lambda cats, *_a, **_k: (
+    passthrough_guard = lambda cats, *_a, **_k: (
         cats,
-        {"added_skills": [], "line_utilization": []},
+        {
+            "removed_skills": [],
+            "deduped_skills": [],
+            "added_skills": [],
+            "line_utilization": [],
+        },
     )
     with (
         patch("ai.OpenAI", return_value=mock_client),
-        patch("ai.pack_skill_lines", side_effect=passthrough_packer),
+        patch("ai.apply_skills_guardrails", side_effect=passthrough_guard),
     ):
         result, _warnings, _packer = revise_tailored_content(
             "Backend engineer role",
