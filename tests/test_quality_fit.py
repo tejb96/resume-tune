@@ -13,7 +13,7 @@ from resume import build_resume, docx_to_html, fit_resume_to_page_budget, load_b
 ROOT = Path(__file__).resolve().parent.parent
 
 
-def test_enforce_skills_layout_caps_categories_and_skills() -> None:
+def test_enforce_skills_layout_caps_categories() -> None:
     categories = [
         {"name": "A", "skills": ["1", "2", "3", "4", "5", "6"]},
         {"name": "B", "skills": ["x"]},
@@ -24,10 +24,21 @@ def test_enforce_skills_layout_caps_categories_and_skills() -> None:
     result = enforce_skills_layout(
         categories,
         max_categories=3,
-        max_skills_per_category=2,
         max_chars_per_line=88,
     )
     assert len(result) == 3
+    line_len = skill_category_line_length(result[0]["name"], result[0]["skills"])
+    assert line_len <= 88
+
+
+def test_enforce_skills_layout_optional_skill_count_cap() -> None:
+    categories = [{"name": "A", "skills": ["1", "2", "3", "4", "5", "6"]}]
+    result = enforce_skills_layout(
+        categories,
+        max_skills_per_category=2,
+        max_chars_per_line=88,
+        cap_skills_per_category=True,
+    )
     assert len(result[0]["skills"]) == 2
 
 

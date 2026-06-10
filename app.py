@@ -12,8 +12,8 @@ from ai import (
     AIResponseError,
     DEFAULT_AI_OUTPUT_MAX_CHARS,
     EMPTY_AI_OUTPUT,
-    enforce_skills_layout,
     filter_skill_categories,
+    finalize_manual_skills,
     format_skill_categories,
     generate_tailored_content,
     parse_skill_categories,
@@ -94,6 +94,7 @@ def apply_artifacts_to_result(
     background_data: dict,
     ai_output: dict,
     skill_warnings: list[str] | None = None,
+    skill_packer_info: dict | None = None,
     *,
     max_pages: int,
     max_chars: int,
@@ -127,6 +128,8 @@ def apply_artifacts_to_result(
     result.pop("ats", None)
     if skill_warnings is not None:
         result["skill_warnings"] = skill_warnings
+    if skill_packer_info is not None:
+        result["skill_packer_info"] = skill_packer_info
     result["docx_bytes"] = artifacts["docx_bytes"]
     result["html"] = artifacts["html"]
     result["pdf_bytes"] = artifacts["pdf_bytes"]
@@ -270,6 +273,24 @@ def render_page_fit_diagnostic(
                 "Skills were not modified. Shorten bullets in background.md or omit sections "
                 "in config.toml."
             )
+
+
+def render_skill_packer_diagnostic(packer_info: dict | None) -> None:
+    """Show line-capacity packing results in the sidebar."""
+    if not packer_info:
+        return
+    added = packer_info.get("added_skills") or []
+    lines = packer_info.get("line_utilization") or []
+    if not added and not lines:
+        return
+    with st.expander("Skills line packing", expanded=bool(added)):
+        if added:
+            st.caption("Auto-added to fill line capacity: **" + ", ".join(added) + "**")
+        for line in lines:
+            name = line.get("name", "")
+            chars = line.get("chars", 0)
+            max_chars = line.get("max", 0)
+            st.caption(f"{name}: **{chars}** / **{max_chars}** characters")
 
 
 def run_ats_check(
@@ -604,7 +625,7 @@ if generate:
                         else "Generating tailored summary..."
                     )
                 ):
-                    ai_output, skill_warnings = generate_tailored_content(
+                    ai_output, skill_warnings, skill_packer_info = generate_tailored_content(
                         job_description,
                         background_path,
                         endpoint_url=endpoint_url,
@@ -616,7 +637,10 @@ if generate:
                         **skills_layout_kwargs(),
                     )
             else:
-                ai_output, skill_warnings = dict(EMPTY_AI_OUTPUT), []
+                ai_output, skill_warnings, skill_packer_info = dict(EMPTY_AI_OUTPUT), [], {
+                    "added_skills": [],
+                    "line_utilization": [],
+                }
 
             with st.spinner("Building resume preview..."):
                 st.session_state.review_nonce += 1
@@ -625,6 +649,7 @@ if generate:
                     background_data,
                     ai_output,
                     skill_warnings=skill_warnings,
+                    skill_packer_info=skill_packer_info,
                     content_selection=content_selection,
                     **artifact_build_kwargs(),
                 )
@@ -714,7 +739,7 @@ else:
                                 "summary": result.get("summary", ""),
                                 "skill_categories": result.get("skill_categories", []),
                             }
-                            ai_output, skill_warnings = revise_tailored_content(
+                            ai_output, skill_warnings, skill_packer_info = revise_tailored_content(
                                 result.get("job_description", job_description),
                                 current_output,
                                 revision_prompt,
@@ -742,6 +767,7 @@ else:
                                     background_data,
                                     ai_output,
                                     skill_warnings=skill_warnings,
+                                    skill_packer_info=skill_packer_info,
                                     **artifact_build_kwargs(result),
                                 )
                                 result["revision_history"] = history
@@ -777,6 +803,7 @@ else:
                     )
                     apply_error: str | None = None
                     filtered = manual_categories
+                    skill_packer_info: dict | None = None
 
                     if include_summary and not manual_summary.strip():
                         apply_error = "Professional summary cannot be empty."
@@ -796,8 +823,10 @@ else:
                         elif not filtered:
                             apply_error = "No valid skills remain after background check."
                         else:
-                            filtered = enforce_skills_layout(
+                            filtered, skill_packer_info = finalize_manual_skills(
                                 filtered,
+                                background_text,
+                                result.get("job_description", job_description),
                                 **skills_layout_kwargs(),
                             )
                             if not filtered:
@@ -816,6 +845,7 @@ else:
                                     "summary": manual_summary if include_summary else "",
                                     "skill_categories": filtered if include_skills else [],
                                 },
+                                skill_packer_info=skill_packer_info if include_skills else None,
                                 **artifact_build_kwargs(result),
                             )
                             st.session_state.review_nonce += 1
@@ -840,6 +870,8 @@ else:
             include_skills=preview_include_skills,
             enable_job_aware_selection=enable_job_aware_selection and not result.get("preview_mode"),
         )
+        if preview_include_skills:
+            render_skill_packer_diagnostic(result.get("skill_packer_info"))
         render_ats_section(
             result,
             background_data,

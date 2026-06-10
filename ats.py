@@ -543,6 +543,8 @@ MATCH_ALIASES: dict[str, list[str]] = {
     "github": ["gh"],
     "docker": ["containerization", "containers"],
     "golang": ["go"],
+    "tailwind css": ["tailwind"],
+    "tailwind": ["tailwind css"],
 }
 
 # Short tokens that need word-boundary matching.
@@ -630,35 +632,69 @@ def _canonical_keyword(term: str) -> str:
     return _CANONICAL.get(term.lower(), term)
 
 
-def extract_jd_keywords(job_description: str) -> list[str]:
-    """Extract tech keywords from a job description deterministically."""
-    if not job_description.strip():
+def _term_in_text(term: str, text: str, *, normalized: str | None = None) -> bool:
+    """Return True when a curated tech term appears in text (word boundaries for single tokens)."""
+    norm = normalized if normalized is not None else _normalize_text(text)
+    pattern = re.escape(term.lower())
+    if " " in term:
+        return bool(re.search(pattern, norm, re.IGNORECASE))
+    if term.lower() in _WORD_BOUNDARY_TERMS:
+        return bool(re.search(rf"\b{pattern}\b", norm, re.IGNORECASE))
+    return bool(re.search(rf"\b{pattern}\b", norm, re.IGNORECASE))
+
+
+def _extract_tech_terms_from_text(text: str) -> list[str]:
+    """Extract curated tech terms from arbitrary text (longest-match-first)."""
+    if not text.strip():
         return []
 
-    normalized = _normalize_text(job_description)
+    normalized = _normalize_text(text)
     found: dict[str, str] = {}
 
     for term in _SORTED_TECH_TERMS:
-        pattern = re.escape(term.lower())
-        if " " in term:
-            if re.search(pattern, normalized, re.IGNORECASE):
-                canonical = _canonical_keyword(term)
-                found[canonical.lower()] = canonical
-        else:
-            if term.lower() in _WORD_BOUNDARY_TERMS:
-                if re.search(rf"\b{pattern}\b", normalized, re.IGNORECASE):
-                    canonical = _canonical_keyword(term)
-                    found[canonical.lower()] = canonical
-            elif re.search(rf"\b{pattern}\b", normalized, re.IGNORECASE):
-                canonical = _canonical_keyword(term)
-                found[canonical.lower()] = canonical
+        if _term_in_text(term, text, normalized=normalized):
+            canonical = _canonical_keyword(term)
+            found[canonical.lower()] = canonical
 
     for regex, label in PATTERN_TERMS:
-        if regex.search(job_description):
+        if regex.search(text):
             canonical = _canonical_keyword(label)
             found[canonical.lower()] = canonical
 
     return sorted(found.values(), key=str.lower)
+
+
+def extract_jd_keywords(job_description: str) -> list[str]:
+    """Extract tech keywords from a job description deterministically."""
+    return _extract_tech_terms_from_text(job_description)
+
+
+def _prefer_jd_skill_labels(
+    skills: list[str],
+    jd_keywords: list[str],
+    background_text: str,
+) -> list[str]:
+    """Prefer JD-matching labels when multiple evidenced forms exist (e.g. Tailwind CSS vs Tailwind)."""
+    jd_lower = {k.lower() for k in jd_keywords}
+    bg_lower = background_text.lower()
+    drop: set[str] = set()
+
+    if "tailwind css" in jd_lower and "tailwind css" in bg_lower:
+        drop.add("tailwind")
+
+    return [s for s in skills if s.lower() not in drop]
+
+
+def extract_evidenced_skills(
+    background_text: str,
+    *,
+    jd_keywords: list[str] | None = None,
+) -> list[str]:
+    """Extract tech terms evidenced in background text using word-boundary matching."""
+    skills = _extract_tech_terms_from_text(background_text)
+    if jd_keywords:
+        skills = _prefer_jd_skill_labels(skills, jd_keywords, background_text)
+    return skills
 
 
 def _expand_aliases(keyword: str) -> list[str]:

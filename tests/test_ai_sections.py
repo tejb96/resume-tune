@@ -10,11 +10,14 @@ import pytest
 
 from ai import (
     EMPTY_AI_OUTPUT,
+    ai_output_char_count,
     enforce_output_budget,
     generate_tailored_content,
     normalize_ai_output,
+    pack_skill_lines,
     parse_response,
     revise_tailored_content,
+    skills_subject_to_char_budget,
 )
 from resume import trim_summary_one_step
 
@@ -72,7 +75,52 @@ def test_enforce_output_budget_skips_excluded_summary() -> None:
         include_skills=True,
     )
     assert trimmed["summary"] == ""
-    assert trimmed["skill_categories"]
+    assert trimmed["skill_categories"][0]["skills"] == ["Python"]
+
+
+def test_skills_only_excluded_from_char_budget() -> None:
+    assert not skills_subject_to_char_budget(include_summary=False, include_skills=True)
+    categories = [{"name": "Languages", "skills": ["Python", "Go", "Java", "Rust", "C"]}]
+    assert ai_output_char_count("", categories, include_summary=False, include_skills=True) == 0
+    trimmed = enforce_output_budget(
+        "",
+        categories,
+        10,
+        include_summary=False,
+        include_skills=True,
+    )
+    assert trimmed["skill_categories"] == categories
+
+
+def test_pack_skill_lines_fills_missing_git() -> None:
+    background = "Other tools: Git, Linux, Jira. Experience with Python and Docker."
+    categories = [
+        {"name": "Backend", "skills": ["Python", "Docker"]},
+    ]
+    jd = "Looking for Python, Docker, and Git experience."
+    packed, info = pack_skill_lines(
+        categories,
+        background,
+        jd,
+        max_chars_per_line=88,
+    )
+    all_skills = [s for cat in packed for s in cat["skills"]]
+    assert "Git" in all_skills
+    assert "Git" in info["added_skills"]
+
+
+def test_pack_skill_lines_prefers_tailwind_css_label() -> None:
+    background = "Full stack: React, Tailwind, Tailwind CSS, TypeScript."
+    categories = [{"name": "Frontend", "skills": ["React", "TypeScript"]}]
+    jd = "Requires React, TypeScript, and Tailwind CSS."
+    packed, info = pack_skill_lines(
+        categories,
+        background,
+        jd,
+        max_chars_per_line=88,
+    )
+    all_skills = [s for cat in packed for s in cat["skills"]]
+    assert "Tailwind CSS" in all_skills
 
 
 def test_trim_summary_one_step_skips_skills() -> None:
@@ -93,7 +141,7 @@ def test_trim_summary_one_step_skips_skills() -> None:
 def test_generate_tailored_content_skips_llm_when_both_excluded() -> None:
     background_path = ROOT / "background.example.md"
     with patch("ai.OpenAI") as mock_openai:
-        ai_output, warnings = generate_tailored_content(
+        ai_output, warnings, packer = generate_tailored_content(
             "",
             background_path,
             endpoint_url="http://localhost:13305/api/v1",
@@ -104,6 +152,7 @@ def test_generate_tailored_content_skips_llm_when_both_excluded() -> None:
     mock_openai.assert_not_called()
     assert ai_output == EMPTY_AI_OUTPUT
     assert warnings == []
+    assert packer == {"added_skills": [], "line_utilization": []}
 
 
 def test_generate_tailored_content_skills_only_uses_skills_prompt() -> None:
@@ -122,8 +171,15 @@ def test_generate_tailored_content_skills_only_uses_skills_prompt() -> None:
     mock_client = MagicMock()
     mock_client.chat.completions.create.return_value = mock_response
 
-    with patch("ai.OpenAI", return_value=mock_client):
-        ai_output, _warnings = generate_tailored_content(
+    passthrough_packer = lambda cats, *_a, **_k: (
+        cats,
+        {"added_skills": [], "line_utilization": []},
+    )
+    with (
+        patch("ai.OpenAI", return_value=mock_client),
+        patch("ai.pack_skill_lines", side_effect=passthrough_packer),
+    ):
+        ai_output, _warnings, _packer = generate_tailored_content(
             "Backend role",
             background_path,
             endpoint_url="http://localhost:13305/api/v1",
@@ -136,6 +192,7 @@ def test_generate_tailored_content_skills_only_uses_skills_prompt() -> None:
         "content"
     ]
     assert '"summary"' not in system_prompt
+    assert "LINE CAPACITY" in system_prompt
     assert "skill_categories" in system_prompt
     assert ai_output["summary"] == ""
     assert ai_output["skill_categories"][0]["skills"] == ["Python", "Go"]
@@ -154,7 +211,7 @@ def test_generate_tailored_content_summary_only_uses_summary_prompt() -> None:
     mock_client.chat.completions.create.return_value = mock_response
 
     with patch("ai.OpenAI", return_value=mock_client):
-        ai_output, _warnings = generate_tailored_content(
+        ai_output, _warnings, _packer = generate_tailored_content(
             "Backend role",
             background_path,
             endpoint_url="http://localhost:13305/api/v1",
@@ -192,8 +249,15 @@ def test_revise_tailored_content_skills_only_preserves_summary() -> None:
     mock_client = MagicMock()
     mock_client.chat.completions.create.return_value = mock_response
 
-    with patch("ai.OpenAI", return_value=mock_client):
-        result, _warnings = revise_tailored_content(
+    passthrough_packer = lambda cats, *_a, **_k: (
+        cats,
+        {"added_skills": [], "line_utilization": []},
+    )
+    with (
+        patch("ai.OpenAI", return_value=mock_client),
+        patch("ai.pack_skill_lines", side_effect=passthrough_packer),
+    ):
+        result, _warnings, _packer = revise_tailored_content(
             "Backend engineer role",
             current_output,
             "Add a data category.",

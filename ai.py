@@ -17,10 +17,18 @@ DEFAULT_MAX_CHARS_PER_SKILL_LINE = 88
 
 SKILLS_LAYOUT_RULES = (
     '- "skill_categories": at most {max_skill_categories} categories. '
-    "At most {max_skills_per_category} short skills per category. "
-    "Each category line (\"Name: skill1, skill2, ...\") must fit on one line "
-    "(about {max_chars_per_skill_line} characters). Use terse skill names "
-    '(e.g. "Node.js" not "Node.js and Express.js"). Order by job relevance.'
+    "Pack each line close to {max_chars_per_skill_line} characters with evidenced skills "
+    "(about {max_skills_per_category} skills per line is typical). "
+    "Each category line (\"Name: skill1, skill2, ...\") must fit on one line. "
+    'Use terse skill names (e.g. "Node.js" not "Node.js and Express.js"). '
+    "Order by job relevance. Fill available line space with secondary evidenced tools "
+    "(e.g. Git, Tailwind CSS) when they appear in the background."
+)
+
+SKILLS_LINE_CAPACITY_RULES = (
+    "- LINE CAPACITY (critical): Use up to {max_skill_categories} category lines. "
+    "Each line must fit on one row (about {max_chars_per_skill_line} characters including "
+    "the category name). Pack lines close to capacity with evidenced skills."
 )
 
 SYSTEM_PROMPT_TEMPLATE = """You are a professional resume writer. Given the candidate background below and a job description, produce a tailored professional summary and categorized skills.
@@ -58,7 +66,7 @@ SKILLS_ONLY_SYSTEM_PROMPT_TEMPLATE = """You are a professional resume writer. Gi
 RULES (strict):
 - Output ONLY valid JSON. No markdown code fences. No preamble. No explanation. No trailing text.
 - JSON schema: {{"skill_categories": [{{"name": "<category>", "skills": ["<skill>", ...]}}, ...]}}
-- TOTAL LENGTH (critical): Count every category "name" and every skill string. The combined total must be at most {max_chars} characters.
+- {skills_line_capacity_rules}
 - {skills_layout_rules}
 - Skills must be evidenced in CANDIDATE BACKGROUND only. Do NOT invent skills. Do NOT add testing frameworks, tools, or technologies mentioned only in the job description unless they appear in CANDIDATE BACKGROUND.
 - Do not include any keys other than "skill_categories".
@@ -85,7 +93,7 @@ SKILLS_ONLY_REVISION_SYSTEM_PROMPT_TEMPLATE = """You are a professional resume w
 RULES (strict):
 - Output ONLY valid JSON. No markdown code fences. No preamble. No explanation. No trailing text.
 - JSON schema: {{"skill_categories": [{{"name": "<category>", "skills": ["<skill>", ...]}}, ...]}}
-- TOTAL LENGTH (critical): Count every category "name" and every skill string. The combined total must be at most {max_chars} characters.
+- {skills_line_capacity_rules}
 - Apply the user's revision request while keeping content targeted to the job description.
 - {skills_layout_rules}
 - Use only facts from the background. Skills must be evidenced in CANDIDATE BACKGROUND only. Do NOT invent skills. Do NOT add skills from the job description unless they appear in CANDIDATE BACKGROUND.
@@ -180,6 +188,11 @@ def _validate_skill_categories(categories: Any) -> list[dict[str, Any]]:
     return validated
 
 
+def skills_subject_to_char_budget(*, include_summary: bool, include_skills: bool) -> bool:
+    """Skills count toward ai_output_max_chars only when summary is also generated."""
+    return include_summary and include_skills
+
+
 def ai_output_char_count(
     summary: str,
     skill_categories: list[dict[str, Any]],
@@ -191,7 +204,10 @@ def ai_output_char_count(
     total = 0
     if include_summary:
         total += len(summary.strip())
-    if include_skills:
+    if include_skills and skills_subject_to_char_budget(
+        include_summary=include_summary,
+        include_skills=include_skills,
+    ):
         for cat in skill_categories:
             total += len(cat["name"])
             total += sum(len(skill) for skill in cat["skills"])
@@ -217,12 +233,15 @@ def enforce_output_budget(
         else []
     )
 
-    if include_skills:
+    if include_skills and skills_subject_to_char_budget(
+        include_summary=include_summary,
+        include_skills=include_skills,
+    ):
         while categories and ai_output_char_count(
             summary,
             categories,
             include_summary=include_summary,
-            include_skills=True,
+            include_skills=include_skills,
         ) > max_chars:
             last = categories[-1]
             if last["skills"]:
@@ -294,17 +313,166 @@ def enforce_skills_layout(
     max_categories: int = DEFAULT_MAX_SKILL_CATEGORIES,
     max_skills_per_category: int = DEFAULT_MAX_SKILLS_PER_CATEGORY,
     max_chars_per_line: int = DEFAULT_MAX_CHARS_PER_SKILL_LINE,
+    cap_skills_per_category: bool = False,
 ) -> list[dict[str, Any]]:
-    """Cap categories/skills and trim each line to fit on one row at generation time."""
+    """Cap categories and trim each line to fit on one row at generation time."""
     result: list[dict[str, Any]] = []
     for cat in skill_categories[:max_categories]:
         name = cat["name"].strip()
-        skills = [s.strip() for s in cat["skills"][:max_skills_per_category] if s.strip()]
+        skills = [s.strip() for s in cat["skills"] if s.strip()]
+        if cap_skills_per_category:
+            skills = skills[:max_skills_per_category]
         while skills and skill_category_line_length(name, skills) > max_chars_per_line:
             skills.pop()
         if skills:
             result.append({"name": name, "skills": skills})
     return result
+
+
+def _skills_on_resume(categories: list[dict[str, Any]]) -> set[str]:
+    return {skill.lower() for cat in categories for skill in cat["skills"]}
+
+
+def _skill_already_listed(skill: str, categories: list[dict[str, Any]]) -> bool:
+    skill_lower = skill.lower()
+    present = _skills_on_resume(categories)
+    if skill_lower in present:
+        return True
+    if skill_lower == "tailwind css" and "tailwind" in present:
+        return True
+    if skill_lower == "tailwind" and "tailwind css" in present:
+        return True
+    return False
+
+
+def _skill_fits_line(name: str, skills: list[str], new_skill: str, max_chars: int) -> bool:
+    return skill_category_line_length(name, skills + [new_skill]) <= max_chars
+
+
+def _rank_skills_for_packing(
+    pool: list[str],
+    categories: list[dict[str, Any]],
+    *,
+    priority_keywords: list[str],
+) -> list[str]:
+    """Rank evidenced skills for line packing; ATS-missing JD keywords first."""
+    present = _skills_on_resume(categories)
+    remaining = [s for s in pool if not _skill_already_listed(s, categories)]
+
+    def priority(skill: str) -> tuple[int, int, str]:
+        skill_lower = skill.lower()
+        for idx, keyword in enumerate(priority_keywords):
+            if skill_lower == keyword.lower():
+                return (0, idx, skill_lower)
+            if keyword.lower() == "tailwind css" and skill_lower == "tailwind":
+                return (1, idx, skill_lower)
+            if keyword.lower() == "tailwind" and skill_lower == "tailwind css":
+                return (0, idx, skill_lower)
+        if skill_lower in present:
+            return (3, 0, skill_lower)
+        return (2, 0, skill_lower)
+
+    return sorted(remaining, key=priority)
+
+
+def skill_line_utilization(
+    skill_categories: list[dict[str, Any]],
+    *,
+    max_chars_per_line: int = DEFAULT_MAX_CHARS_PER_SKILL_LINE,
+) -> list[dict[str, Any]]:
+    """Per-line character utilization for diagnostics."""
+    lines: list[dict[str, Any]] = []
+    for cat in skill_categories:
+        chars = skill_category_line_length(cat["name"], cat["skills"])
+        lines.append(
+            {
+                "name": cat["name"],
+                "chars": chars,
+                "max": max_chars_per_line,
+            }
+        )
+    return lines
+
+
+def pack_skill_lines(
+    skill_categories: list[dict[str, Any]],
+    background_text: str,
+    job_description: str = "",
+    *,
+    max_categories: int = DEFAULT_MAX_SKILL_CATEGORIES,
+    max_chars_per_line: int = DEFAULT_MAX_CHARS_PER_SKILL_LINE,
+    min_tools_line_items: int = 2,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """
+    Fill unused per-line capacity with evidenced, JD-relevant skills.
+
+    Returns (packed categories, diagnostics with added_skills and line_utilization).
+    """
+    from ats import extract_evidenced_skills, extract_jd_keywords, match_keywords
+
+    categories = [
+        {"name": cat["name"], "skills": list(cat["skills"])} for cat in skill_categories
+    ]
+    jd_keywords = extract_jd_keywords(job_description) if job_description.strip() else []
+    pool = extract_evidenced_skills(background_text, jd_keywords=jd_keywords or None)
+
+    current_text = format_skill_categories(categories)
+    _, missing_keywords = match_keywords(jd_keywords, current_text) if jd_keywords else ([], [])
+    ranked = _rank_skills_for_packing(
+        pool,
+        categories,
+        priority_keywords=missing_keywords,
+    )
+
+    original_skills = _skills_on_resume(categories)
+    added: list[str] = []
+    for skill in ranked:
+        if _skill_already_listed(skill, categories):
+            continue
+        best_idx: int | None = None
+        best_room = -1
+        for idx, cat in enumerate(categories):
+            if not _skill_fits_line(cat["name"], cat["skills"], skill, max_chars_per_line):
+                continue
+            room = max_chars_per_line - skill_category_line_length(cat["name"], cat["skills"])
+            if room > best_room:
+                best_room = room
+                best_idx = idx
+        if best_idx is not None:
+            categories[best_idx]["skills"].append(skill)
+            added.append(skill)
+
+    tools_candidates = [
+        s
+        for s in ranked
+        if s not in added and not _skill_already_listed(s, categories)
+    ]
+    if len(categories) < max_categories and len(tools_candidates) >= min_tools_line_items:
+        tools_skills: list[str] = []
+        for skill in tools_candidates:
+            if _skill_fits_line("Tools", tools_skills, skill, max_chars_per_line):
+                tools_skills.append(skill)
+        if len(tools_skills) >= min_tools_line_items:
+            categories.append({"name": "Tools", "skills": tools_skills})
+            added.extend(tools_skills)
+
+    packed = enforce_skills_layout(
+        categories,
+        max_categories=max_categories,
+        max_chars_per_line=max_chars_per_line,
+    )
+    packer_added = sorted(
+        {skill for cat in packed for skill in cat["skills"] if skill.lower() not in original_skills},
+        key=str.lower,
+    )
+    diagnostics = {
+        "added_skills": packer_added,
+        "line_utilization": skill_line_utilization(
+            packed,
+            max_chars_per_line=max_chars_per_line,
+        ),
+    }
+    return packed, diagnostics
 
 
 def _format_skills_layout_rules(
@@ -316,6 +484,17 @@ def _format_skills_layout_rules(
     return SKILLS_LAYOUT_RULES.format(
         max_skill_categories=max_skill_categories,
         max_skills_per_category=max_skills_per_category,
+        max_chars_per_skill_line=max_chars_per_skill_line,
+    )
+
+
+def _format_skills_line_capacity_rules(
+    *,
+    max_skill_categories: int,
+    max_chars_per_skill_line: int,
+) -> str:
+    return SKILLS_LINE_CAPACITY_RULES.format(
+        max_skill_categories=max_skill_categories,
         max_chars_per_skill_line=max_chars_per_skill_line,
     )
 
@@ -335,6 +514,10 @@ def build_system_prompt(
         max_skills_per_category=max_skills_per_category,
         max_chars_per_skill_line=max_chars_per_skill_line,
     )
+    skills_line_capacity_rules = _format_skills_line_capacity_rules(
+        max_skill_categories=max_skill_categories,
+        max_chars_per_skill_line=max_chars_per_skill_line,
+    )
     if include_summary and include_skills:
         template = SYSTEM_PROMPT_TEMPLATE
     elif include_skills:
@@ -343,11 +526,14 @@ def build_system_prompt(
         template = SUMMARY_ONLY_SYSTEM_PROMPT_TEMPLATE
     else:
         raise ValueError("At least one AI section must be included to build a system prompt")
-    return template.format(
-        background_text=background_text,
-        max_chars=max_chars,
-        skills_layout_rules=skills_layout_rules,
-    )
+    format_kwargs: dict[str, Any] = {
+        "background_text": background_text,
+        "max_chars": max_chars,
+        "skills_layout_rules": skills_layout_rules,
+    }
+    if include_skills and not include_summary:
+        format_kwargs["skills_line_capacity_rules"] = skills_line_capacity_rules
+    return template.format(**format_kwargs)
 
 
 def build_revision_system_prompt(
@@ -365,6 +551,10 @@ def build_revision_system_prompt(
         max_skills_per_category=max_skills_per_category,
         max_chars_per_skill_line=max_chars_per_skill_line,
     )
+    skills_line_capacity_rules = _format_skills_line_capacity_rules(
+        max_skill_categories=max_skill_categories,
+        max_chars_per_skill_line=max_chars_per_skill_line,
+    )
     if include_summary and include_skills:
         template = REVISION_SYSTEM_PROMPT_TEMPLATE
     elif include_skills:
@@ -373,11 +563,14 @@ def build_revision_system_prompt(
         template = SUMMARY_ONLY_REVISION_SYSTEM_PROMPT_TEMPLATE
     else:
         raise ValueError("At least one AI section must be included to build a revision prompt")
-    return template.format(
-        background_text=background_text,
-        max_chars=max_chars,
-        skills_layout_rules=skills_layout_rules,
-    )
+    format_kwargs: dict[str, Any] = {
+        "background_text": background_text,
+        "max_chars": max_chars,
+        "skills_layout_rules": skills_layout_rules,
+    }
+    if include_skills and not include_summary:
+        format_kwargs["skills_line_capacity_rules"] = skills_line_capacity_rules
+    return template.format(**format_kwargs)
 
 
 def format_skill_categories(skill_categories: list[dict[str, Any]]) -> str:
@@ -580,12 +773,35 @@ def _rejected_skills_message(rejected: list[str]) -> str:
     )
 
 
+def _build_user_message_with_jd_hints(
+    job_description: str,
+    *,
+    include_skills: bool,
+) -> str:
+    """User message for generation; optional JD keyword hints for skills packing."""
+    from ats import extract_jd_keywords
+
+    jd = job_description.strip()
+    if not jd or not include_skills:
+        return jd
+    keywords = extract_jd_keywords(jd)
+    if not keywords:
+        return jd
+    hinted = ", ".join(keywords[:20])
+    suffix = (
+        f"\n\nPrioritize evidenced skills that match these job keywords when they fit "
+        f"on a line: {hinted}."
+    )
+    return jd + suffix
+
+
 def _call_with_retries(
     client: OpenAI,
     *,
     model_name: str,
     messages: list[dict[str, str]],
     background_text: str,
+    job_description: str,
     ai_output_max_chars: int,
     include_summary: bool = True,
     include_skills: bool = True,
@@ -593,9 +809,14 @@ def _call_with_retries(
     max_skill_categories: int = DEFAULT_MAX_SKILL_CATEGORIES,
     max_skills_per_category: int = DEFAULT_MAX_SKILLS_PER_CATEGORY,
     max_chars_per_skill_line: int = DEFAULT_MAX_CHARS_PER_SKILL_LINE,
-) -> tuple[dict[str, Any], list[str]]:
+) -> tuple[dict[str, Any], list[str], dict[str, Any]]:
     """Call the model with JSON/budget/skill-grounding retries."""
     preserved = preserved_output or dict(EMPTY_AI_OUTPUT)
+    packer_info: dict[str, Any] = {"added_skills": [], "line_utilization": []}
+    apply_char_budget = include_summary or skills_subject_to_char_budget(
+        include_summary=include_summary,
+        include_skills=include_skills,
+    )
     last_error: AIResponseError | None = None
     max_attempts = 3
     for attempt in range(max_attempts):
@@ -658,7 +879,6 @@ def _call_with_retries(
             parsed["skill_categories"] = enforce_skills_layout(
                 parsed["skill_categories"],
                 max_categories=max_skill_categories,
-                max_skills_per_category=max_skills_per_category,
                 max_chars_per_line=max_chars_per_skill_line,
             )
             if not parsed["skill_categories"]:
@@ -676,6 +896,14 @@ def _call_with_retries(
                         }
                     ]
                 continue
+            packed, packer_info = pack_skill_lines(
+                parsed["skill_categories"],
+                background_text,
+                job_description,
+                max_categories=max_skill_categories,
+                max_chars_per_line=max_chars_per_skill_line,
+            )
+            parsed["skill_categories"] = packed
 
         parsed = _merge_parsed_with_preserved(
             parsed,
@@ -689,7 +917,10 @@ def _call_with_retries(
             include_summary=include_summary,
             include_skills=include_skills,
         )
-        print(f"[ai] output chars: {char_count}/{ai_output_max_chars}")
+        if apply_char_budget:
+            print(f"[ai] output chars: {char_count}/{ai_output_max_chars}")
+        else:
+            print("[ai] skills-only mode: line-capacity layout (no combined char budget)")
 
         if dropped and attempt < max_attempts - 1:
             messages = messages + [
@@ -697,8 +928,8 @@ def _call_with_retries(
             ]
             continue
 
-        if char_count <= ai_output_max_chars:
-            return parsed, dropped
+        if not apply_char_budget or char_count <= ai_output_max_chars:
+            return parsed, dropped, packer_info
 
         last_error = AIResponseError(
             f"Model output exceeded character budget ({char_count} > {ai_output_max_chars})"
@@ -728,15 +959,22 @@ def _call_with_retries(
             trimmed["skill_categories"] = enforce_skills_layout(
                 trimmed["skill_categories"],
                 max_categories=max_skill_categories,
-                max_skills_per_category=max_skills_per_category,
                 max_chars_per_line=max_chars_per_skill_line,
             )
+            packed, packer_info = pack_skill_lines(
+                trimmed["skill_categories"],
+                background_text,
+                job_description,
+                max_categories=max_skill_categories,
+                max_chars_per_line=max_chars_per_skill_line,
+            )
+            trimmed["skill_categories"] = packed
         print(
             "[ai] trimmed output chars: "
             f"{ai_output_char_count(trimmed['summary'], trimmed['skill_categories'], include_summary=include_summary, include_skills=include_skills)}"
             f"/{ai_output_max_chars}"
         )
-        return trimmed, dropped
+        return trimmed, dropped, packer_info
 
     assert last_error is not None
     raise last_error
@@ -755,14 +993,14 @@ def generate_tailored_content(
     max_skill_categories: int = DEFAULT_MAX_SKILL_CATEGORIES,
     max_skills_per_category: int = DEFAULT_MAX_SKILLS_PER_CATEGORY,
     max_chars_per_skill_line: int = DEFAULT_MAX_CHARS_PER_SKILL_LINE,
-) -> tuple[dict[str, Any], list[str]]:
+) -> tuple[dict[str, Any], list[str], dict[str, Any]]:
     """
-    Call local LLM and return (parsed JSON, dropped skill warnings).
+    Call local LLM and return (parsed JSON, dropped skill warnings, packer diagnostics).
 
     Retries on JSON parse failure, hallucinated skills, and character budget overflow.
     """
     if not include_summary and not include_skills:
-        return dict(EMPTY_AI_OUTPUT), []
+        return dict(EMPTY_AI_OUTPUT), [], {"added_skills": [], "line_utilization": []}
 
     if not job_description.strip():
         raise ValueError("Job description cannot be empty")
@@ -782,7 +1020,13 @@ def generate_tailored_content(
     client = OpenAI(base_url=endpoint_url, api_key=api_key)
     messages: list[dict[str, str]] = [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": job_description.strip()},
+        {
+            "role": "user",
+            "content": _build_user_message_with_jd_hints(
+                job_description,
+                include_skills=include_skills,
+            ),
+        },
     ]
 
     try:
@@ -791,6 +1035,7 @@ def generate_tailored_content(
             model_name=model_name,
             messages=messages,
             background_text=background_text,
+            job_description=job_description.strip(),
             ai_output_max_chars=ai_output_max_chars,
             include_summary=include_summary,
             include_skills=include_skills,
@@ -823,7 +1068,7 @@ def revise_tailored_content(
     max_skill_categories: int = DEFAULT_MAX_SKILL_CATEGORIES,
     max_skills_per_category: int = DEFAULT_MAX_SKILLS_PER_CATEGORY,
     max_chars_per_skill_line: int = DEFAULT_MAX_CHARS_PER_SKILL_LINE,
-) -> tuple[dict[str, Any], list[str]]:
+) -> tuple[dict[str, Any], list[str], dict[str, Any]]:
     """
     Revise summary/skills based on user feedback.
 
@@ -886,6 +1131,7 @@ def revise_tailored_content(
             model_name=model_name,
             messages=messages,
             background_text=background_text,
+            job_description=job_description.strip(),
             ai_output_max_chars=ai_output_max_chars,
             include_summary=include_summary,
             include_skills=include_skills,
@@ -901,3 +1147,26 @@ def revise_tailored_content(
                 "Is your local OpenAI-compatible API running?"
             ) from exc
         raise
+
+
+def finalize_manual_skills(
+    skill_categories: list[dict[str, Any]],
+    background_text: str,
+    job_description: str = "",
+    *,
+    max_skill_categories: int = DEFAULT_MAX_SKILL_CATEGORIES,
+    max_chars_per_skill_line: int = DEFAULT_MAX_CHARS_PER_SKILL_LINE,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Apply layout enforcement and line packing to manually edited skills."""
+    laid_out = enforce_skills_layout(
+        skill_categories,
+        max_categories=max_skill_categories,
+        max_chars_per_line=max_chars_per_skill_line,
+    )
+    return pack_skill_lines(
+        laid_out,
+        background_text,
+        job_description,
+        max_categories=max_skill_categories,
+        max_chars_per_line=max_chars_per_skill_line,
+    )

@@ -100,8 +100,15 @@ def test_revise_tailored_content_calls_model_and_returns_json() -> None:
     mock_client = MagicMock()
     mock_client.chat.completions.create.return_value = mock_response
 
-    with patch("ai.OpenAI", return_value=mock_client):
-        result, warnings = revise_tailored_content(
+    passthrough_packer = lambda cats, *_a, **_k: (
+        cats,
+        {"added_skills": [], "line_utilization": []},
+    )
+    with (
+        patch("ai.OpenAI", return_value=mock_client),
+        patch("ai.pack_skill_lines", side_effect=passthrough_packer),
+    ):
+        result, warnings, _packer = revise_tailored_content(
             "Backend engineer role",
             current_output,
             "Focus on backend Python work.",
@@ -164,8 +171,15 @@ def test_revise_tailored_content_retries_on_invalid_json() -> None:
         mock_response_good,
     ]
 
-    with patch("ai.OpenAI", return_value=mock_client):
-        result, _warnings = revise_tailored_content(
+    passthrough_packer = lambda cats, *_a, **_k: (
+        cats,
+        {"added_skills": [], "line_utilization": []},
+    )
+    with (
+        patch("ai.OpenAI", return_value=mock_client),
+        patch("ai.pack_skill_lines", side_effect=passthrough_packer),
+    ):
+        result, _warnings, _packer = revise_tailored_content(
             "Job description",
             current_output,
             "Improve the summary.",

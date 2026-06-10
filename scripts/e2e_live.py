@@ -42,7 +42,7 @@ def main() -> None:
     if needs_ai:
         print(f"Calling {endpoint} model={model} ...")
         try:
-            ai_output, warnings = generate_tailored_content(
+            ai_output, warnings, _packer = generate_tailored_content(
                 jd,
                 background_path,
                 endpoint_url=endpoint,
@@ -60,6 +60,7 @@ def main() -> None:
     else:
         print("No AI sections configured; building from background.md only.")
         ai_output, warnings = dict(EMPTY_AI_OUTPUT), []
+        _packer = {"added_skills": [], "line_utilization": []}
 
     data = load_background(background_path)
     docx_bytes = build_resume(data, ai_output, sections=config["resume_sections"])

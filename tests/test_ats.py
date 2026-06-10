@@ -11,6 +11,7 @@ from ats import (
     analyze_ats_compatibility,
     compare_pdf_fidelity,
     detect_sections,
+    extract_evidenced_skills,
     extract_jd_keywords,
     match_keywords,
     parse_contact_info,
@@ -82,6 +83,33 @@ def test_match_keywords_word_boundary() -> None:
 
     matched_go, _ = match_keywords(["Go"], "Experience with Go and microservices.")
     assert matched_go == ["Go"]
+
+
+def test_match_keywords_tailwind_css_alias() -> None:
+    matched, missing = match_keywords(
+        ["Tailwind CSS"],
+        "SKILLS\nFrontend: React, Tailwind, TypeScript",
+    )
+    assert matched == ["Tailwind CSS"]
+    assert missing == []
+
+    matched_short, missing_short = match_keywords(
+        ["Tailwind"],
+        "SKILLS\nFrontend: React, Tailwind CSS, TypeScript",
+    )
+    assert matched_short == ["Tailwind"]
+    assert missing_short == []
+
+
+def test_extract_evidenced_skills_git_word_boundary() -> None:
+    bg_with_github = "Experience with GitHub Actions and CI/CD pipelines."
+    skills_github = extract_evidenced_skills(bg_with_github)
+    assert "Git" not in skills_github
+    assert "GitHub Actions" in skills_github
+
+    bg_with_git = "Other tools: Git, Linux, Agile."
+    skills_git = extract_evidenced_skills(bg_with_git)
+    assert "Git" in skills_git
 
 
 def test_detect_sections_finds_headings() -> None:
