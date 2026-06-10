@@ -27,6 +27,20 @@ uv run streamlit run app.py
 
 ## Workflow
 
+### Background preview (no API)
+
+1. Click **Preview from background** in the sidebar — no job description or LLM endpoint required.
+2. The app renders static sections from `background.md` (experience, education, projects, certifications). Summary and skills are omitted so you can check bullet wording and layout.
+3. Edit `background.md`, click **Preview from background** again to refresh.
+
+CLI equivalent:
+
+```bash
+uv run python scripts/smoke_test.py --background background.md --static-only
+```
+
+### Job-tailored generate
+
 1. Paste a job description in the sidebar and click **Generate tailored content**.
 2. The app builds a DOCX immediately and shows an HTML preview on the right.
 3. Use the chat on the left to request changes (e.g. *"Shorten the skills list"* or *"Emphasize Kubernetes experience"*). Each revision auto-updates the preview.
@@ -110,6 +124,7 @@ Keep a rich `background.md` as source of truth; the app selects what ships per j
 
 ```bash
 uv run python scripts/smoke_test.py          # DOCX + HTML preview from fixtures (no LLM)
+uv run python scripts/smoke_test.py --background background.md --static-only
 uv run python scripts/e2e_live.py            # full pipeline if API is up
 uv run pytest                                # unit tests (optional: uv sync --extra dev)
 ```

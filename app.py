@@ -26,11 +26,13 @@ from resume import (
     load_background,
     resume_filename,
     save_resume_to_disk,
+    static_preview_sections,
 )
 from selection import (
     DEFAULT_MIN_PROJECT_BULLETS,
     DEFAULT_MIN_PROJECT_ENTRIES,
     default_selection,
+    full_selection,
     generate_content_selection,
     static_content_stats,
 )
@@ -156,6 +158,41 @@ def skills_layout_kwargs() -> dict:
         "max_skills_per_category": max_skills_per_category,
         "max_chars_per_skill_line": max_chars_per_skill_line,
     }
+
+
+def preview_artifact_build_kwargs() -> dict:
+    """Kwargs for background preview (static sections only, full content selection)."""
+    return {
+        "max_pages": max_pages,
+        "max_chars": max_chars,
+        "sections": static_preview_sections(resume_sections),
+        "max_certifications": max_certifications,
+        "min_project_entries": min_project_entries,
+        "min_project_bullets": min_project_bullets,
+        "auto_fill_page_budget": auto_fill_page_budget,
+        "overflow_warning_min_composite": overflow_warning_min_composite,
+    }
+
+
+def build_background_preview(background_data: dict) -> dict:
+    """Build resume preview from background.md without LLM calls."""
+    preview_sections = static_preview_sections(resume_sections)
+    content_selection = full_selection(background_data)
+    result = apply_artifacts_to_result(
+        {},
+        background_data,
+        dict(EMPTY_AI_OUTPUT),
+        content_selection=content_selection,
+        **preview_artifact_build_kwargs(),
+    )
+    result["preview_mode"] = True
+    result["revision_history"] = []
+    result["sections"] = preview_sections
+    return result
+
+
+def api_configured() -> bool:
+    return bool(endpoint_url)
 
 
 def render_page_indicator(page_count: int | None, max_pages: int) -> None:
@@ -327,15 +364,10 @@ elif not models and default_model:
 
 st.set_page_config(page_title="Resume Tailor", layout="wide")
 st.title("Resume Tailor")
-if needs_ai:
-    st.caption(
-        "Generate a tailored resume from a job description, preview it, revise summary or "
-        "skills via chat, then save as DOCX or PDF."
-    )
-else:
-    st.caption(
-        "Build a resume from background.md using your configured sections, then save as DOCX or PDF."
-    )
+st.caption(
+    "Preview static sections from background.md to check formatting, or generate a "
+    "job-tailored resume with AI summary and skills."
+)
 
 example_background_path = ROOT / "background.example.md"
 try:
@@ -366,7 +398,14 @@ with st.sidebar:
     model_index = models.index(default_model) if default_model in models else 0
     selected_model = st.selectbox("Model", models, index=model_index)
     st.text_input("API endpoint", value=endpoint_url or "(set OPENAI_BASE_URL in .env)", disabled=True)
+    preview = st.button("Preview from background", use_container_width=True)
     generate = st.button("Generate tailored content", type="primary", use_container_width=True)
+
+    if (needs_ai or enable_job_aware_selection) and not endpoint_url:
+        st.warning(
+            "Set OPENAI_BASE_URL in `.env` (or `endpoint_url` in config.toml) to use "
+            "**Generate tailored content**. Background preview works without an API."
+        )
 
     st.divider()
     if libreoffice_available():
@@ -380,27 +419,23 @@ with st.sidebar:
 if not background_ok:
     st.stop()
 
-if needs_ai and not endpoint_url:
-    st.error(
-        "Set OPENAI_BASE_URL in a `.env` file (copy from `.env.example`) "
-        "or `endpoint_url` in config.toml."
-    )
-    st.stop()
-
-if enable_job_aware_selection and not endpoint_url:
-    st.error(
-        "Job-aware selection requires OPENAI_BASE_URL in `.env` "
-        "or `endpoint_url` in config.toml."
-    )
-    st.stop()
-
 if "result" not in st.session_state:
     st.session_state.result = None
 if "review_nonce" not in st.session_state:
     st.session_state.review_nonce = 0
 
+if preview:
+    with st.spinner("Building background preview..."):
+        st.session_state.review_nonce += 1
+        st.session_state.result = build_background_preview(background_data)
+
 if generate:
-    if needs_job_description and not job_description.strip():
+    if not api_configured() and (needs_ai or enable_job_aware_selection):
+        st.error(
+            "Set OPENAI_BASE_URL in a `.env` file (copy from `.env.example`) "
+            "or `endpoint_url` in config.toml."
+        )
+    elif needs_job_description and not job_description.strip():
         st.warning("Please paste a job description first.")
     else:
         try:
@@ -459,6 +494,8 @@ if generate:
                 )
                 result["job_description"] = job_description.strip()
                 result["revision_history"] = []
+                result["preview_mode"] = False
+                result.pop("sections", None)
                 st.session_state.result = result
         except AIResponseError as exc:
             st.error(str(exc))
@@ -471,18 +508,18 @@ if result is not None and "skill_categories" not in result and result.get("skill
     result["skill_categories"] = [{"name": "Skills", "skills": result["skills"]}]
 
 if result is None:
-    if needs_ai:
-        st.info(
-            "Paste a job description in the sidebar and click **Generate tailored content**. "
-            "You'll see a resume preview immediately. Use the chat to revise summary or skills, "
-            "then save as DOCX or PDF."
-        )
-    else:
-        st.info(
-            "Click **Generate tailored content** to build a resume from background.md. "
-            "Then save as DOCX or PDF."
-        )
+    st.info(
+        "Click **Preview from background** to check how experience, education, projects, "
+        "and other static sections render (no API needed). "
+        "Use **Generate tailored content** with a job description for AI skills and job-aware selection."
+    )
 else:
+    if result.get("preview_mode"):
+        st.caption(
+            "Background preview — summary and skills omitted. "
+            "Use **Generate tailored content** for tailored AI sections."
+        )
+
     if result.get("skill_warnings"):
         st.warning(
             "Skills removed because they were not found in your background file: "
@@ -505,7 +542,7 @@ else:
     left_col, right_col = st.columns([2, 3], gap="large")
 
     with left_col:
-        if needs_ai:
+        if needs_ai and not result.get("preview_mode"):
             st.subheader("Revise")
             for message in result.get("revision_history", []):
                 with st.chat_message(message["role"]):
@@ -529,49 +566,55 @@ else:
                 key="revision_chat_input",
             )
             if revision_prompt:
-                with st.spinner(revision_spinner):
-                    try:
-                        current_output = {
-                            "summary": result.get("summary", ""),
-                            "skill_categories": result.get("skill_categories", []),
-                        }
-                        ai_output, skill_warnings = revise_tailored_content(
-                            result.get("job_description", job_description),
-                            current_output,
-                            revision_prompt,
-                            background_path,
-                            endpoint_url=endpoint_url,
-                            model_name=selected_model,
-                            api_key=api_key,
-                            ai_output_max_chars=max_chars,
-                            revision_history=result.get("revision_history"),
-                            include_summary=include_summary,
-                            include_skills=include_skills,
-                            **skills_layout_kwargs(),
-                        )
-                        with st.spinner("Updating resume preview..."):
-                            history = list(result.get("revision_history", []))
-                            history.append({"role": "user", "content": revision_prompt})
-                            history.append(
-                                {
-                                    "role": "assistant",
-                                    "content": revision_reply,
-                                }
+                if not api_configured():
+                    st.error(
+                        "Set OPENAI_BASE_URL in `.env` or `endpoint_url` in config.toml "
+                        "to revise summary or skills."
+                    )
+                else:
+                    with st.spinner(revision_spinner):
+                        try:
+                            current_output = {
+                                "summary": result.get("summary", ""),
+                                "skill_categories": result.get("skill_categories", []),
+                            }
+                            ai_output, skill_warnings = revise_tailored_content(
+                                result.get("job_description", job_description),
+                                current_output,
+                                revision_prompt,
+                                background_path,
+                                endpoint_url=endpoint_url,
+                                model_name=selected_model,
+                                api_key=api_key,
+                                ai_output_max_chars=max_chars,
+                                revision_history=result.get("revision_history"),
+                                include_summary=include_summary,
+                                include_skills=include_skills,
+                                **skills_layout_kwargs(),
                             )
-                            apply_artifacts_to_result(
-                                result,
-                                background_data,
-                                ai_output,
-                                skill_warnings=skill_warnings,
-                                **artifact_build_kwargs(result),
-                            )
-                            result["revision_history"] = history
-                            st.session_state.review_nonce += 1
-                            st.rerun()
-                    except AIResponseError as exc:
-                        st.error(str(exc))
-                    except ValueError as exc:
-                        st.error(str(exc))
+                            with st.spinner("Updating resume preview..."):
+                                history = list(result.get("revision_history", []))
+                                history.append({"role": "user", "content": revision_prompt})
+                                history.append(
+                                    {
+                                        "role": "assistant",
+                                        "content": revision_reply,
+                                    }
+                                )
+                                apply_artifacts_to_result(
+                                    result,
+                                    background_data,
+                                    ai_output,
+                                    skill_warnings=skill_warnings,
+                                    **artifact_build_kwargs(result),
+                                )
+                                result["revision_history"] = history
+                                st.session_state.review_nonce += 1
+                                st.rerun()
+                        except AIResponseError as exc:
+                            st.error(str(exc))
+                        except ValueError as exc:
+                            st.error(str(exc))
 
             with st.expander("Advanced edit"):
                 nonce = st.session_state.review_nonce
@@ -641,17 +684,25 @@ else:
                             )
                             st.session_state.review_nonce += 1
                             st.rerun()
+        elif result.get("preview_mode"):
+            st.caption(
+                "Revise experience and project bullets in background.md, then click "
+                "**Preview from background** again."
+            )
         else:
             st.caption("No AI sections configured. Edit background.md or config.toml to enable revision.")
 
         render_save_section(result, output_dir)
+        preview_sections = result.get("sections") or resume_sections
+        preview_include_summary = "summary" in preview_sections
+        preview_include_skills = "skills" in preview_sections
         render_page_fit_diagnostic(
             result.get("diagnostics"),
             background_data,
             max_chars=max_chars,
-            include_summary=include_summary,
-            include_skills=include_skills,
-            enable_job_aware_selection=enable_job_aware_selection,
+            include_summary=preview_include_summary,
+            include_skills=preview_include_skills,
+            enable_job_aware_selection=enable_job_aware_selection and not result.get("preview_mode"),
         )
 
     with right_col:

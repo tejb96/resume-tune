@@ -66,6 +66,7 @@ DEFAULT_RESUME_SECTIONS = [
     "certifications",
 ]
 VALID_RESUME_SECTIONS = frozenset(DEFAULT_RESUME_SECTIONS)
+STATIC_PREVIEW_SECTIONS = frozenset({"summary", "skills"})
 
 
 def resolve_resume_sections(sections: list[str] | None) -> list[str]:
@@ -93,6 +94,11 @@ def ai_section_flags(sections: list[str] | None) -> tuple[bool, bool]:
     """Return (include_summary, include_skills) from resolved resume section config."""
     resolved = resolve_resume_sections(sections)
     return "summary" in resolved, "skills" in resolved
+
+
+def static_preview_sections(sections: list[str] | None) -> list[str]:
+    """Sections for no-LLM background preview (drops summary/skills)."""
+    return [s for s in resolve_resume_sections(sections) if s not in STATIC_PREVIEW_SECTIONS]
 
 
 def load_background(path: Path) -> dict[str, Any]:
