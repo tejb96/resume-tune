@@ -105,8 +105,11 @@ def test_apply_skills_guardrails_topup_tools_bucket() -> None:
         jd,
         max_chars_per_line=88,
     )
+    cloud_skills = guarded[0]["skills"]
+    assert "Git" not in cloud_skills
     all_skills = [s for cat in guarded for s in cat["skills"]]
-    assert "Git" not in all_skills
+    assert "Git" in all_skills
+    assert "Agile" not in all_skills
 
 
 def test_trim_summary_one_step_skips_skills() -> None:

@@ -16,27 +16,27 @@ DEFAULT_MAX_SKILLS_PER_CATEGORY = 5
 DEFAULT_MAX_CHARS_PER_SKILL_LINE = 88
 
 SKILLS_LAYOUT_RULES = (
-    '- "skill_categories": at most {max_skill_categories} lines. '
-    "Pack each line close to {max_chars_per_skill_line} characters "
-    "(about {max_skills_per_category} skills per line is typical). "
-    "Each line must fit on one row. Use exact spellings from ALLOWED SKILLS. "
-    "Order by job relevance. Use full line capacity with job-relevant skills from the map. "
-    '"name" may be "" when a category label would mislead — skills still required on that line. '
+    '- "skill_categories": exactly {max_skill_categories} lines when possible. '
+    "Each line must fit on one row (about {max_chars_per_skill_line} characters). "
+    'Use "name": "" on every line — no category labels; group similar skills per line. '
+    "Line 1: languages/frameworks · Line 2: AI/ML · Line 3: cloud/devops · Line 4: tools. "
+    "Use exact spellings from ALLOWED SKILLS. Order skills by job relevance within each line. "
     "Do not list redundant pairs (TensorFlow.js OR TensorFlow, not both; Tailwind CSS OR Tailwind). "
-    "Keep tools (Git, Agile, Jira) on Tools lines, not Languages."
+    "Do not add skills merely to fill space."
 )
 
 SKILLS_MAP_RULES = (
     "- Select skills ONLY from ALLOWED SKILLS below (exact spelling). "
     "Do not add skills outside the map. "
-    "Rename category labels for the job (e.g. \"Full Stack\", \"Backend\"). "
-    "Merge buckets when job-relevant. Use \"name\": \"\" for a plain skill list line when labels would look odd."
+    "Include STRONG job matches first; add evidenced supporting skills only when they fit the role. "
+    "Skip niche AI/CV tools (e.g. YOLOv8, Ollama) when the job is full-stack web unless the JD names them. "
+    'Use "name": "" on every line.'
 )
 
 SKILLS_LINE_CAPACITY_RULES = (
-    "- LINE CAPACITY (critical): Use up to {max_skill_categories} category lines. "
-    "Each line must fit on one row (about {max_chars_per_skill_line} characters including "
-    "the category name). Pack lines close to capacity with evidenced skills."
+    "- LINE CAPACITY: Up to {max_skill_categories} lines, all with empty \"name\". "
+    "Each line must fit on one row (about {max_chars_per_skill_line} characters). "
+    "Pack job-relevant skills only; guardrails will rebuild lines from the skills map."
 )
 
 SYSTEM_PROMPT_TEMPLATE = """You are a professional resume writer. Given the candidate background below and a job description, produce a tailored professional summary and categorized skills.
@@ -50,7 +50,7 @@ RULES (strict):
 - {skills_map_rules}
 - Do not include any keys other than "summary" and "skill_categories".
 
-{allowed_skills}
+{skill_hints}{allowed_skills}
 
 CANDIDATE BACKGROUND (narrative context):
 {background_text}
@@ -67,7 +67,7 @@ RULES (strict):
 - {skills_map_rules}
 - Do not include any keys other than "summary" and "skill_categories".
 
-{allowed_skills}
+{skill_hints}{allowed_skills}
 
 CANDIDATE BACKGROUND (narrative context):
 {background_text}
@@ -83,7 +83,7 @@ RULES (strict):
 - {skills_map_rules}
 - Do not include any keys other than "skill_categories".
 
-{allowed_skills}
+{skill_hints}{allowed_skills}
 
 CANDIDATE BACKGROUND (narrative context):
 {background_text}
@@ -113,7 +113,7 @@ RULES (strict):
 - {skills_map_rules}
 - Do not include any keys other than "skill_categories".
 
-{allowed_skills}
+{skill_hints}{allowed_skills}
 
 CANDIDATE BACKGROUND (narrative context):
 {background_text}
@@ -476,15 +476,16 @@ def apply_skills_guardrails(
     skills_map: dict[str, list[str]],
     job_description: str = "",
     *,
+    evidence_text: str = "",
     max_categories: int = DEFAULT_MAX_SKILL_CATEGORIES,
     max_chars_per_line: int = DEFAULT_MAX_CHARS_PER_SKILL_LINE,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """
-    Map-grounded guardrails: filter, dedupe, trim lines, optional same-bucket top-up.
+    Map-grounded guardrails: filter, dedupe, relevance-aware prune/pack.
 
     Returns (final categories, diagnostics).
     """
-    from ats import extract_jd_keywords, match_keywords
+    from skills_selection import select_relevant_skill_categories
 
     categories = [
         {"name": cat["name"], "skills": list(cat["skills"])} for cat in skill_categories
@@ -493,50 +494,24 @@ def apply_skills_guardrails(
     categories = filtered
 
     categories, deduped = dedupe_skill_redundancies(categories)
-    categories = enforce_skills_layout(
+
+    packed, selection_info = select_relevant_skill_categories(
         categories,
+        skills_map,
+        job_description,
+        evidence_text,
         max_categories=max_categories,
         max_chars_per_line=max_chars_per_line,
     )
 
-    original_skills = _skills_on_resume(categories)
-    jd_keywords = extract_jd_keywords(job_description) if job_description.strip() else []
-    current_text = format_skill_categories(categories)
-    _, missing_keywords = match_keywords(jd_keywords, current_text) if jd_keywords else ([], [])
-
-    added: list[str] = []
-    for cat in categories:
-        candidates = _same_bucket_candidates_for_line(cat, skills_map, categories)
-        ranked = _rank_skills_for_packing(
-            candidates,
-            categories,
-            priority_keywords=missing_keywords,
-        )
-        for skill in ranked:
-            if _skill_already_listed(skill, categories):
-                continue
-            if not _skill_fits_line(cat["name"], cat["skills"], skill, max_chars_per_line):
-                continue
-            cat["skills"].append(skill)
-            added.append(skill)
-
-    packed = enforce_skills_layout(
-        categories,
-        max_categories=max_categories,
-        max_chars_per_line=max_chars_per_line,
-    )
-    guardrail_added = sorted(
-        {s for s in added if s.lower() in _skills_on_resume(packed) and s.lower() not in original_skills},
-        key=str.lower,
-    )
     diagnostics = {
         "removed_skills": removed,
         "deduped_skills": deduped,
-        "added_skills": guardrail_added,
-        "line_utilization": skill_line_utilization(
-            packed,
-            max_chars_per_line=max_chars_per_line,
-        ),
+        "added_skills": selection_info.get("added_skills", []),
+        "removed_irrelevant": selection_info.get("removed_irrelevant", []),
+        "dropped_categories": selection_info.get("dropped_categories", []),
+        "skill_tiers": selection_info.get("skill_tiers", {}),
+        "line_utilization": selection_info.get("line_utilization", []),
     }
     return packed, diagnostics
 
@@ -590,6 +565,39 @@ def _format_skills_line_capacity_rules(
     )
 
 
+def build_evidence_text(
+    background_text: str,
+    background_data: dict[str, Any] | None = None,
+    content_selection: dict[str, Any] | None = None,
+) -> str:
+    """Combine static resume YAML and narrative text for skills evidence."""
+    from skills_selection import extract_narrative_text, flatten_static_evidence_text
+
+    narrative = extract_narrative_text(background_text)
+    if background_data is None:
+        return narrative
+    return flatten_static_evidence_text(
+        background_data,
+        content_selection=content_selection,
+        narrative_text=narrative,
+    )
+
+
+def build_skill_hints_for_prompt(
+    skills_map: dict[str, list[str]],
+    job_description: str,
+    evidence_text: str,
+) -> str:
+    """Build deterministic skill hint block for the LLM system prompt."""
+    from skills_selection import format_skill_hints_for_prompt, score_skills_for_job
+
+    if not skills_map or not job_description.strip():
+        return ""
+    scores = score_skills_for_job(skills_map, job_description, evidence_text)
+    hints = format_skill_hints_for_prompt(scores, skills_map)
+    return f"{hints}\n" if hints else ""
+
+
 def build_system_prompt(
     background_text: str,
     *,
@@ -600,6 +608,8 @@ def build_system_prompt(
     max_skill_categories: int = DEFAULT_MAX_SKILL_CATEGORIES,
     max_skills_per_category: int = DEFAULT_MAX_SKILLS_PER_CATEGORY,
     max_chars_per_skill_line: int = DEFAULT_MAX_CHARS_PER_SKILL_LINE,
+    job_description: str = "",
+    evidence_text: str = "",
 ) -> str:
     from skills_map import format_skills_map_for_prompt
 
@@ -628,8 +638,16 @@ def build_system_prompt(
     if include_skills:
         format_kwargs["skills_map_rules"] = SKILLS_MAP_RULES
         format_kwargs["allowed_skills"] = format_skills_map_for_prompt(skills_map or {})
+        format_kwargs["skill_hints"] = build_skill_hints_for_prompt(
+            skills_map or {},
+            job_description,
+            evidence_text,
+        )
         if not include_summary:
             format_kwargs["skills_line_capacity_rules"] = skills_line_capacity_rules
+    else:
+        format_kwargs["skill_hints"] = ""
+        format_kwargs["allowed_skills"] = ""
     return template.format(**format_kwargs)
 
 
@@ -643,6 +661,8 @@ def build_revision_system_prompt(
     max_skill_categories: int = DEFAULT_MAX_SKILL_CATEGORIES,
     max_skills_per_category: int = DEFAULT_MAX_SKILLS_PER_CATEGORY,
     max_chars_per_skill_line: int = DEFAULT_MAX_CHARS_PER_SKILL_LINE,
+    job_description: str = "",
+    evidence_text: str = "",
 ) -> str:
     from skills_map import format_skills_map_for_prompt
 
@@ -671,8 +691,16 @@ def build_revision_system_prompt(
     if include_skills:
         format_kwargs["skills_map_rules"] = SKILLS_MAP_RULES
         format_kwargs["allowed_skills"] = format_skills_map_for_prompt(skills_map or {})
+        format_kwargs["skill_hints"] = build_skill_hints_for_prompt(
+            skills_map or {},
+            job_description,
+            evidence_text,
+        )
         if not include_summary:
             format_kwargs["skills_line_capacity_rules"] = skills_line_capacity_rules
+    else:
+        format_kwargs["skill_hints"] = ""
+        format_kwargs["allowed_skills"] = ""
     return template.format(**format_kwargs)
 
 
@@ -934,6 +962,7 @@ def _call_with_retries(
     background_text: str,
     job_description: str,
     skills_map: dict[str, list[str]],
+    evidence_text: str = "",
     ai_output_max_chars: int,
     include_summary: bool = True,
     include_skills: bool = True,
@@ -1013,11 +1042,15 @@ def _call_with_retries(
             parsed = {"summary": parsed["summary"], "skill_categories": filtered}
 
         if include_skills:
-            parsed["skill_categories"] = enforce_skills_layout(
+            guarded, packer_info = apply_skills_guardrails(
                 parsed["skill_categories"],
+                skills_map,
+                job_description,
+                evidence_text=evidence_text,
                 max_categories=max_skill_categories,
                 max_chars_per_line=max_chars_per_skill_line,
             )
+            parsed["skill_categories"] = guarded
             if not parsed["skill_categories"]:
                 last_error = AIResponseError(
                     "Skills could not be fitted to the configured layout limits"
@@ -1033,14 +1066,6 @@ def _call_with_retries(
                         }
                     ]
                 continue
-            guarded, packer_info = apply_skills_guardrails(
-                parsed["skill_categories"],
-                skills_map,
-                job_description,
-                max_categories=max_skill_categories,
-                max_chars_per_line=max_chars_per_skill_line,
-            )
-            parsed["skill_categories"] = guarded
 
         parsed = _merge_parsed_with_preserved(
             parsed,
@@ -1130,6 +1155,8 @@ def generate_tailored_content(
     max_skill_categories: int = DEFAULT_MAX_SKILL_CATEGORIES,
     max_skills_per_category: int = DEFAULT_MAX_SKILLS_PER_CATEGORY,
     max_chars_per_skill_line: int = DEFAULT_MAX_CHARS_PER_SKILL_LINE,
+    background_data: dict[str, Any] | None = None,
+    content_selection: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], list[str], dict[str, Any]]:
     """
     Call local LLM and return (parsed JSON, dropped skill warnings, packer diagnostics).
@@ -1158,6 +1185,12 @@ def generate_tailored_content(
             "background.md must define skills_map (YAML) or ## Core strengths bullets for skills"
         )
 
+    evidence_text = build_evidence_text(
+        background_text,
+        background_data,
+        content_selection,
+    )
+
     system_prompt = build_system_prompt(
         background_text,
         skills_map=skills_map,
@@ -1167,6 +1200,8 @@ def generate_tailored_content(
         max_skill_categories=max_skill_categories,
         max_skills_per_category=max_skills_per_category,
         max_chars_per_skill_line=max_chars_per_skill_line,
+        job_description=job_description.strip(),
+        evidence_text=evidence_text,
     )
     client = OpenAI(base_url=endpoint_url, api_key=api_key)
     messages: list[dict[str, str]] = [
@@ -1188,6 +1223,7 @@ def generate_tailored_content(
             background_text=background_text,
             job_description=job_description.strip(),
             skills_map=skills_map,
+            evidence_text=evidence_text,
             ai_output_max_chars=ai_output_max_chars,
             include_summary=include_summary,
             include_skills=include_skills,
@@ -1220,6 +1256,8 @@ def revise_tailored_content(
     max_skill_categories: int = DEFAULT_MAX_SKILL_CATEGORIES,
     max_skills_per_category: int = DEFAULT_MAX_SKILLS_PER_CATEGORY,
     max_chars_per_skill_line: int = DEFAULT_MAX_CHARS_PER_SKILL_LINE,
+    background_data: dict[str, Any] | None = None,
+    content_selection: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], list[str], dict[str, Any]]:
     """
     Revise summary/skills based on user feedback.
@@ -1256,6 +1294,12 @@ def revise_tailored_content(
             "background.md must define skills_map (YAML) or ## Core strengths bullets for skills"
         )
 
+    evidence_text = build_evidence_text(
+        background_text,
+        background_data,
+        content_selection,
+    )
+
     system_prompt = build_revision_system_prompt(
         background_text,
         skills_map=skills_map,
@@ -1265,6 +1309,8 @@ def revise_tailored_content(
         max_skill_categories=max_skill_categories,
         max_skills_per_category=max_skills_per_category,
         max_chars_per_skill_line=max_chars_per_skill_line,
+        job_description=job_description.strip(),
+        evidence_text=evidence_text,
     )
     client = OpenAI(base_url=endpoint_url, api_key=api_key)
 
@@ -1294,6 +1340,7 @@ def revise_tailored_content(
             background_text=background_text,
             job_description=job_description.strip(),
             skills_map=skills_map,
+            evidence_text=evidence_text,
             ai_output_max_chars=ai_output_max_chars,
             include_summary=include_summary,
             include_skills=include_skills,
@@ -1316,6 +1363,7 @@ def finalize_manual_skills(
     skills_map: dict[str, list[str]],
     job_description: str = "",
     *,
+    evidence_text: str = "",
     max_skill_categories: int = DEFAULT_MAX_SKILL_CATEGORIES,
     max_chars_per_skill_line: int = DEFAULT_MAX_CHARS_PER_SKILL_LINE,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -1324,6 +1372,7 @@ def finalize_manual_skills(
         skill_categories,
         skills_map,
         job_description,
+        evidence_text=evidence_text,
         max_categories=max_skill_categories,
         max_chars_per_line=max_chars_per_skill_line,
     )

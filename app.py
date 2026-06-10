@@ -12,11 +12,13 @@ from ai import (
     AIResponseError,
     DEFAULT_AI_OUTPUT_MAX_CHARS,
     EMPTY_AI_OUTPUT,
+    build_evidence_text,
     filter_skill_categories,
     finalize_manual_skills,
     format_skill_categories,
     generate_tailored_content,
     parse_skill_categories,
+    read_background_text,
     revise_tailored_content,
 )
 from skills_map import load_skills_map
@@ -282,16 +284,32 @@ def render_skill_packer_diagnostic(packer_info: dict | None) -> None:
     removed = packer_info.get("removed_skills") or []
     deduped = packer_info.get("deduped_skills") or []
     added = packer_info.get("added_skills") or []
+    removed_irrelevant = packer_info.get("removed_irrelevant") or []
+    dropped_categories = packer_info.get("dropped_categories") or []
     lines = packer_info.get("line_utilization") or []
-    if not removed and not deduped and not added and not lines:
+    if (
+        not removed
+        and not deduped
+        and not added
+        and not removed_irrelevant
+        and not dropped_categories
+        and not lines
+    ):
         return
-    with st.expander("Skills guardrails", expanded=bool(removed or deduped or added)):
+    with st.expander(
+        "Skills guardrails",
+        expanded=bool(removed or deduped or added or removed_irrelevant or dropped_categories),
+    ):
         if removed:
             st.caption("Removed (not in skills_map): **" + ", ".join(removed) + "**")
+        if removed_irrelevant:
+            st.caption("Removed (not job-relevant): **" + ", ".join(removed_irrelevant) + "**")
+        if dropped_categories:
+            st.caption("Dropped categories: **" + ", ".join(dropped_categories) + "**")
         if deduped:
             st.caption("Deduped: **" + ", ".join(deduped) + "**")
         if added:
-            st.caption("Same-bucket top-up: **" + ", ".join(added) + "**")
+            st.caption("Relevance top-up: **" + ", ".join(added) + "**")
         for line in lines:
             name = line.get("name", "") or "(unnamed)"
             chars = line.get("chars", 0)
@@ -640,6 +658,8 @@ if generate:
                         ai_output_max_chars=max_chars,
                         include_summary=include_summary,
                         include_skills=include_skills,
+                        background_data=background_data,
+                        content_selection=content_selection,
                         **skills_layout_kwargs(),
                     )
             else:
@@ -759,6 +779,8 @@ else:
                                 revision_history=result.get("revision_history"),
                                 include_summary=include_summary,
                                 include_skills=include_skills,
+                                background_data=background_data,
+                                content_selection=result.get("content_selection"),
                                 **skills_layout_kwargs(),
                             )
                             with st.spinner("Updating resume preview..."):
@@ -835,10 +857,16 @@ else:
                             elif not filtered:
                                 apply_error = "No valid skills remain after skills_map check."
                             else:
+                                evidence_text = build_evidence_text(
+                                    read_background_text(background_path),
+                                    background_data,
+                                    result.get("content_selection"),
+                                )
                                 filtered, skill_packer_info = finalize_manual_skills(
                                     filtered,
                                     skills_map,
                                     result.get("job_description", job_description),
+                                    evidence_text=evidence_text,
                                     **skills_layout_kwargs(),
                                 )
                                 if not filtered:

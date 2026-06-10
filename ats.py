@@ -472,6 +472,13 @@ TECH_TERMS: tuple[str, ...] = (
     "Ably",
     "Firebase Realtime",
     "Supabase",
+    "shadcn/ui",
+    "Vercel",
+    "Coolify",
+    "Cursor",
+    "Codex",
+    "Claude Code",
+    "GitHub Copilot",
     "Appwrite",
     "PocketBase",
     "PlanetScale",
@@ -545,6 +552,11 @@ MATCH_ALIASES: dict[str, list[str]] = {
     "golang": ["go"],
     "tailwind css": ["tailwind"],
     "tailwind": ["tailwind css"],
+    "shadcn/ui": ["shadcn", "shadcn ui"],
+    "javascript/typescript": ["javascript", "typescript"],
+    "openai apis": ["openai api", "openai"],
+    "vercel": ["vercel deployment"],
+    "github copilot": ["copilot"],
 }
 
 # Short tokens that need word-boundary matching.
@@ -581,6 +593,9 @@ PATTERN_TERMS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\bReact\.js\b", re.IGNORECASE), "React"),
     (re.compile(r"\bVue\.js\b", re.IGNORECASE), "Vue.js"),
     (re.compile(r"\bNext\.js\b", re.IGNORECASE), "Next.js"),
+    (re.compile(r"\bshadcn/ui\b", re.IGNORECASE), "shadcn/ui"),
+    (re.compile(r"\bJavaScript/TypeScript\b", re.IGNORECASE), "TypeScript"),
+    (re.compile(r"\bJavaScript\s*/\s*TypeScript\b", re.IGNORECASE), "TypeScript"),
 )
 
 @dataclass(frozen=True)
