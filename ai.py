@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from pathlib import Path
 from typing import Any
@@ -15,14 +16,31 @@ DEFAULT_MAX_SKILL_CATEGORIES = 4
 DEFAULT_MAX_SKILLS_PER_CATEGORY = 5
 DEFAULT_MAX_CHARS_PER_SKILL_LINE = 88
 
+# Heuristic JSON size for estimate_max_completion_tokens (skills-only mode).
+_SKILLS_JSON_WRAPPER_OVERHEAD = 30
+_SKILLS_JSON_LINE_OVERHEAD = 28
+_COMPLETION_CHARS_PER_TOKEN = 3.5
+_COMPLETION_TOKEN_SAFETY_RATIO = 0.2
+
 SKILLS_LAYOUT_RULES = (
-    '- "skill_categories": exactly {max_skill_categories} lines when possible. '
+    '- "skill_categories": up to {max_skill_categories} lines with up to '
+    "{max_skills_per_category} skills each. "
     "Each line must fit on one row (about {max_chars_per_skill_line} characters). "
-    'Use "name": "" on every line — no category labels; group similar skills per line. '
-    "Line 1: languages/frameworks · Line 2: AI/ML · Line 3: cloud/devops · Line 4: tools. "
+    'Use "name": "" on every line — no category labels. '
+    "Pack highest job-relevant skills first: fill line 1 to capacity, then line 2, and so on. "
     "Use exact spellings from ALLOWED SKILLS. Order skills by job relevance within each line. "
     "Do not list redundant pairs (TensorFlow.js OR TensorFlow, not both; Tailwind CSS OR Tailwind). "
-    "Do not add skills merely to fill space."
+    "Do not repeat any skill across lines. Do not add skills merely to fill space."
+)
+
+SKILLS_ONLY_OUTPUT_RULES = (
+    '- "skill_categories": at most {max_skill_categories} entries. '
+    'Each entry must be {{"name": "", "skills": ["<skill>", ...]}} with at most '
+    "{max_skills_per_category} skills.\n"
+    "- Each line must fit on one row (about {max_chars_per_skill_line} characters). "
+    "Fill line 1 before line 2. Do not repeat any skill. Stop after the final line.\n"
+    "- Each skill must be its own string — never comma-join skills into one string.\n"
+    "- Example: {skills_example}"
 )
 
 SKILLS_MAP_RULES = (
@@ -31,12 +49,6 @@ SKILLS_MAP_RULES = (
     "Include STRONG job matches first; add evidenced supporting skills only when they fit the role. "
     "Skip niche AI/CV tools (e.g. YOLOv8, Ollama) when the job is full-stack web unless the JD names them. "
     'Use "name": "" on every line.'
-)
-
-SKILLS_LINE_CAPACITY_RULES = (
-    "- LINE CAPACITY: Up to {max_skill_categories} lines, all with empty \"name\". "
-    "Each line must fit on one row (about {max_chars_per_skill_line} characters). "
-    "Pack job-relevant skills only; guardrails will rebuild lines from the skills map."
 )
 
 SYSTEM_PROMPT_TEMPLATE = """You are a professional resume writer. Given the candidate background below and a job description, produce a tailored professional summary and categorized skills.
@@ -77,9 +89,8 @@ SKILLS_ONLY_SYSTEM_PROMPT_TEMPLATE = """You are a professional resume writer. Gi
 
 RULES (strict):
 - Output ONLY valid JSON. No markdown code fences. No preamble. No explanation. No trailing text.
-- JSON schema: {{"skill_categories": [{{"name": "<category>", "skills": ["<skill>", ...]}}, ...]}}
-- {skills_line_capacity_rules}
-- {skills_layout_rules}
+- JSON schema: {{"skill_categories": [{{"name": "", "skills": ["<skill>", ...]}}, ...]}}
+- {skills_output_rules}
 - {skills_map_rules}
 - Do not include any keys other than "skill_categories".
 
@@ -106,10 +117,9 @@ SKILLS_ONLY_REVISION_SYSTEM_PROMPT_TEMPLATE = """You are a professional resume w
 
 RULES (strict):
 - Output ONLY valid JSON. No markdown code fences. No preamble. No explanation. No trailing text.
-- JSON schema: {{"skill_categories": [{{"name": "<category>", "skills": ["<skill>", ...]}}, ...]}}
-- {skills_line_capacity_rules}
+- JSON schema: {{"skill_categories": [{{"name": "", "skills": ["<skill>", ...]}}, ...]}}
+- {skills_output_rules}
 - Apply the user's revision request while keeping content targeted to the job description.
-- {skills_layout_rules}
 - {skills_map_rules}
 - Do not include any keys other than "skill_categories".
 
@@ -190,15 +200,50 @@ def _coerce_skill_category(cat: Any) -> dict[str, Any]:
     if isinstance(cat, list):
         if not cat or not all(isinstance(s, str) for s in cat):
             raise ValueError("skill_categories entry must be a mapping or string list")
-        if cat[0] == "":
-            return {"name": "", "skills": [s.strip() for s in cat[1:] if s.strip()]}
-        return {"name": "", "skills": [s.strip() for s in cat if s.strip()]}
+        items = cat[1:] if cat and cat[0] == "" else cat
+        skills: list[str] = []
+        for item in items:
+            item = item.strip()
+            if not item:
+                continue
+            if "," in item:
+                skills.extend(part.strip() for part in item.split(",") if part.strip())
+            else:
+                skills.append(item)
+        if not skills:
+            raise ValueError("skill_categories entry must include at least one skill")
+        return {"name": "", "skills": skills}
+    if isinstance(cat, str):
+        item = cat.strip()
+        if not item:
+            raise ValueError("skill_categories entry must include at least one skill")
+        skills = [part.strip() for part in item.split(",") if part.strip()]
+        if not skills:
+            raise ValueError("skill_categories entry must include at least one skill")
+        return {"name": "", "skills": skills}
     raise ValueError("skill_categories entry must be a mapping")
+
+
+def _coerce_skill_categories_list(categories: list[Any]) -> list[Any]:
+    """Accept flat string lines from small models: ["", "React, TypeScript", "AWS"]."""
+    if not categories:
+        return categories
+    if all(isinstance(item, str) for item in categories):
+        coerced: list[Any] = []
+        for item in categories:
+            line = item.strip()
+            if not line:
+                continue
+            coerced.append({"name": "", "skills": [part.strip() for part in line.split(",") if part.strip()]})
+        return coerced
+    return categories
 
 
 def _validate_skill_categories(categories: Any) -> list[dict[str, Any]]:
     if not isinstance(categories, list) or not categories:
         raise ValueError("'skill_categories' must be a non-empty list")
+
+    categories = _coerce_skill_categories_list(categories)
 
     validated: list[dict[str, Any]] = []
     for i, cat in enumerate(categories):
@@ -216,6 +261,72 @@ def _validate_skill_categories(categories: Any) -> list[dict[str, Any]]:
             raise ValueError(f"skill_categories[{i}].skills must be non-empty strings")
         validated.append({"name": name.strip(), "skills": [s.strip() for s in skills]})
     return validated
+
+
+def sanitize_parsed_skill_categories(
+    categories: list[dict[str, Any]],
+    *,
+    max_categories: int = DEFAULT_MAX_SKILL_CATEGORIES,
+    max_skills_per_category: int = DEFAULT_MAX_SKILLS_PER_CATEGORY,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Enforce prompt contract: normalize names, cap categories and skills per line."""
+    stripped_category_names: list[str] = []
+    truncated_category_count = 0
+    truncated_skill_count = 0
+    sanitized: list[dict[str, Any]] = []
+
+    for cat in categories:
+        name = (cat.get("name") or "").strip()
+        if name:
+            stripped_category_names.append(name)
+        expanded: list[str] = []
+        for skill in cat.get("skills", []):
+            text = skill.strip()
+            if not text:
+                continue
+            if "," in text:
+                expanded.extend(part.strip() for part in text.split(",") if part.strip())
+            else:
+                expanded.append(text)
+        if len(expanded) > max_skills_per_category:
+            truncated_skill_count += len(expanded) - max_skills_per_category
+        kept = expanded[:max_skills_per_category]
+        if kept:
+            sanitized.append({"name": "", "skills": kept})
+
+    if len(sanitized) > max_categories:
+        truncated_category_count = len(sanitized) - max_categories
+        sanitized = sanitized[:max_categories]
+
+    return sanitized, {
+        "stripped_category_names": stripped_category_names,
+        "truncated_categories": truncated_category_count,
+        "truncated_skills": truncated_skill_count,
+    }
+
+
+def estimate_max_completion_tokens(
+    *,
+    include_summary: bool,
+    include_skills: bool,
+    max_skill_categories: int = DEFAULT_MAX_SKILL_CATEGORIES,
+    max_chars_per_skill_line: int = DEFAULT_MAX_CHARS_PER_SKILL_LINE,
+    max_skills_per_category: int = DEFAULT_MAX_SKILLS_PER_CATEGORY,
+    ai_output_max_chars: int = DEFAULT_AI_OUTPUT_MAX_CHARS,
+) -> int:
+    """Upper bound on completion tokens for the active AI sections."""
+    _ = max_skills_per_category  # reserved for future tighter estimates
+    if include_skills and not include_summary:
+        json_chars = _SKILLS_JSON_WRAPPER_OVERHEAD + max_skill_categories * (
+            _SKILLS_JSON_LINE_OVERHEAD + max_chars_per_skill_line
+        )
+        base = math.ceil(json_chars / _COMPLETION_CHARS_PER_TOKEN)
+        return base + max(16, int(base * _COMPLETION_TOKEN_SAFETY_RATIO))
+    if include_summary and include_skills:
+        return math.ceil(ai_output_max_chars / _COMPLETION_CHARS_PER_TOKEN) + 32
+    if include_summary:
+        return math.ceil(ai_output_max_chars / _COMPLETION_CHARS_PER_TOKEN) + 16
+    return 256
 
 
 def skills_subject_to_char_budget(*, include_summary: bool, include_skills: bool) -> bool:
@@ -527,6 +638,7 @@ def apply_skills_guardrails(
         "deduped_skills": deduped,
         "added_skills": selection_info.get("added_skills", []),
         "removed_irrelevant": selection_info.get("removed_irrelevant", []),
+        "removed_overflow": selection_info.get("removed_overflow", []),
         "dropped_categories": selection_info.get("dropped_categories", []),
         "skill_tiers": selection_info.get("skill_tiers", {}),
         "line_utilization": selection_info.get("line_utilization", []),
@@ -572,14 +684,31 @@ def _format_skills_layout_rules(
     )
 
 
-def _format_skills_line_capacity_rules(
+def _format_skills_only_example(max_skill_categories: int) -> str:
+    line_examples = [
+        ["React", "TypeScript"],
+        ["AWS", "Docker"],
+        ["Python", "FastAPI"],
+        ["Git", "Agile"],
+    ]
+    entries: list[str] = []
+    for skills in line_examples[:max_skill_categories]:
+        quoted = ", ".join(f'"{skill}"' for skill in skills)
+        entries.append(f'{{"name": "", "skills": [{quoted}]}}')
+    return f'{{"skill_categories": [{", ".join(entries)}]}}'
+
+
+def _format_skills_output_rules(
     *,
     max_skill_categories: int,
+    max_skills_per_category: int,
     max_chars_per_skill_line: int,
 ) -> str:
-    return SKILLS_LINE_CAPACITY_RULES.format(
+    return SKILLS_ONLY_OUTPUT_RULES.format(
         max_skill_categories=max_skill_categories,
+        max_skills_per_category=max_skills_per_category,
         max_chars_per_skill_line=max_chars_per_skill_line,
+        skills_example=_format_skills_only_example(max_skill_categories),
     )
 
 
@@ -636,8 +765,9 @@ def build_system_prompt(
         max_skills_per_category=max_skills_per_category,
         max_chars_per_skill_line=max_chars_per_skill_line,
     )
-    skills_line_capacity_rules = _format_skills_line_capacity_rules(
+    skills_output_rules = _format_skills_output_rules(
         max_skill_categories=max_skill_categories,
+        max_skills_per_category=max_skills_per_category,
         max_chars_per_skill_line=max_chars_per_skill_line,
     )
     if include_summary and include_skills:
@@ -662,7 +792,7 @@ def build_system_prompt(
             evidence_text,
         )
         if not include_summary:
-            format_kwargs["skills_line_capacity_rules"] = skills_line_capacity_rules
+            format_kwargs["skills_output_rules"] = skills_output_rules
     else:
         format_kwargs["skill_hints"] = ""
         format_kwargs["allowed_skills"] = ""
@@ -689,8 +819,9 @@ def build_revision_system_prompt(
         max_skills_per_category=max_skills_per_category,
         max_chars_per_skill_line=max_chars_per_skill_line,
     )
-    skills_line_capacity_rules = _format_skills_line_capacity_rules(
+    skills_output_rules = _format_skills_output_rules(
         max_skill_categories=max_skill_categories,
+        max_skills_per_category=max_skills_per_category,
         max_chars_per_skill_line=max_chars_per_skill_line,
     )
     if include_summary and include_skills:
@@ -715,7 +846,7 @@ def build_revision_system_prompt(
             evidence_text,
         )
         if not include_summary:
-            format_kwargs["skills_line_capacity_rules"] = skills_line_capacity_rules
+            format_kwargs["skills_output_rules"] = skills_output_rules
     else:
         format_kwargs["skill_hints"] = ""
         format_kwargs["allowed_skills"] = ""
@@ -782,17 +913,87 @@ def strip_json_fences(text: str) -> str:
     return stripped.strip()
 
 
+def _repair_truncated_json(text: str) -> str:
+    """Close unclosed strings/brackets/braces for truncated model JSON."""
+    in_string = False
+    escape = False
+    stack: list[str] = []
+    for ch in text:
+        if escape:
+            escape = False
+            continue
+        if ch == "\\" and in_string:
+            escape = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch == "{":
+            stack.append("}")
+        elif ch == "[":
+            stack.append("]")
+        elif ch in "}]" and stack and stack[-1] == ch:
+            stack.pop()
+
+    repaired = text
+    if in_string:
+        repaired += '"'
+    while stack:
+        repaired += stack.pop()
+    return repaired
+
+
+def _extract_json_object(text: str) -> dict[str, Any] | None:
+    """Best-effort parse when json.loads fails on truncated or noisy output."""
+    start = text.find("{")
+    if start < 0:
+        return None
+    candidate = text[start:]
+    for attempt in (candidate, _repair_truncated_json(candidate)):
+        try:
+            data = json.loads(attempt)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict):
+            return data
+    return None
+
+
+def _loads_model_json(text: str) -> dict[str, Any]:
+    cleaned = strip_json_fences(text)
+    for candidate in (cleaned, _repair_truncated_json(cleaned)):
+        try:
+            data = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict):
+            return data
+
+    extracted = _extract_json_object(cleaned)
+    if extracted is not None:
+        return extracted
+
+    snippet = cleaned[:500] + ("..." if len(cleaned) > 500 else "")
+    raise AIResponseError(f"Model returned invalid JSON. Response snippet: {snippet!r}")
+
+
 def parse_response(
     raw: str,
     *,
     include_summary: bool = True,
     include_skills: bool = True,
+    max_skill_categories: int = DEFAULT_MAX_SKILL_CATEGORIES,
+    max_skills_per_category: int = DEFAULT_MAX_SKILLS_PER_CATEGORY,
 ) -> dict[str, Any]:
     """Parse and validate model JSON response for the active AI sections."""
-    cleaned = strip_json_fences(raw)
     try:
-        data = json.loads(cleaned)
-    except json.JSONDecodeError as exc:
+        data = _loads_model_json(raw)
+    except AIResponseError:
+        raise
+    except Exception as exc:
+        cleaned = strip_json_fences(raw)
         snippet = cleaned[:500] + ("..." if len(cleaned) > 500 else "")
         raise AIResponseError(
             f"Model returned invalid JSON: {exc}. Response snippet: {snippet!r}"
@@ -818,7 +1019,18 @@ def parse_response(
             categories = _validate_skill_categories(data["skill_categories"])
         except ValueError as exc:
             raise AIResponseError(str(exc)) from exc
-        return {"summary": summary.strip(), "skill_categories": categories}
+        categories, sanitizer_info = sanitize_parsed_skill_categories(
+            categories,
+            max_categories=max_skill_categories,
+            max_skills_per_category=max_skills_per_category,
+        )
+        if not categories:
+            raise AIResponseError("'skill_categories' must contain at least one valid line after sanitization")
+        return {
+            "summary": summary.strip(),
+            "skill_categories": categories,
+            "_sanitizer_info": sanitizer_info,
+        }
 
     if include_skills:
         if set(data.keys()) != {"skill_categories"}:
@@ -830,7 +1042,18 @@ def parse_response(
             categories = _validate_skill_categories(data["skill_categories"])
         except ValueError as exc:
             raise AIResponseError(str(exc)) from exc
-        return {"summary": "", "skill_categories": categories}
+        categories, sanitizer_info = sanitize_parsed_skill_categories(
+            categories,
+            max_categories=max_skill_categories,
+            max_skills_per_category=max_skills_per_category,
+        )
+        if not categories:
+            raise AIResponseError("'skill_categories' must contain at least one valid line after sanitization")
+        return {
+            "summary": "",
+            "skill_categories": categories,
+            "_sanitizer_info": sanitizer_info,
+        }
 
     if set(data.keys()) != {"summary"}:
         raise AIResponseError(
@@ -926,6 +1149,18 @@ def _shorten_output_message(
     )
 
 
+def _unique_preserve_order(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    unique: list[str] = []
+    for item in items:
+        key = item.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(item)
+    return unique
+
+
 def _merge_parsed_with_preserved(
     parsed: dict[str, Any],
     preserved: dict[str, Any],
@@ -939,15 +1174,6 @@ def _merge_parsed_with_preserved(
             parsed["skill_categories"] if include_skills else preserved.get("skill_categories", [])
         ),
     }
-
-
-def _rejected_skills_message(rejected: list[str]) -> str:
-    skills_list = ", ".join(rejected)
-    return (
-        f"The following skills are not in ALLOWED SKILLS and were removed: "
-        f"{skills_list}. Replace them with exact labels from ALLOWED SKILLS only. "
-        "Reply again with ONLY the JSON object, no markdown fences."
-    )
 
 
 def _build_user_message_with_jd_hints(
@@ -988,8 +1214,9 @@ def _call_with_retries(
     max_skill_categories: int = DEFAULT_MAX_SKILL_CATEGORIES,
     max_skills_per_category: int = DEFAULT_MAX_SKILLS_PER_CATEGORY,
     max_chars_per_skill_line: int = DEFAULT_MAX_CHARS_PER_SKILL_LINE,
+    max_completion_tokens: int | None = None,
 ) -> tuple[dict[str, Any], list[str], dict[str, Any]]:
-    """Call the model with JSON/budget/skill-grounding retries."""
+    """Call the model with JSON/budget retries."""
     preserved = preserved_output or dict(EMPTY_AI_OUTPUT)
     packer_info: dict[str, Any] = {
         "removed_skills": [],
@@ -1001,6 +1228,26 @@ def _call_with_retries(
         include_summary=include_summary,
         include_skills=include_skills,
     )
+    completion_cap = (
+        max_completion_tokens
+        if max_completion_tokens is not None
+        else estimate_max_completion_tokens(
+            include_summary=include_summary,
+            include_skills=include_skills,
+            max_skill_categories=max_skill_categories,
+            max_chars_per_skill_line=max_chars_per_skill_line,
+            max_skills_per_category=max_skills_per_category,
+            ai_output_max_chars=ai_output_max_chars,
+        )
+    )
+    if include_skills and not include_summary:
+        print(
+            f"[ai] max_completion_tokens: {completion_cap} "
+            f"({max_skill_categories} lines × {max_chars_per_skill_line} chars)"
+        )
+    else:
+        print(f"[ai] max_completion_tokens: {completion_cap}")
+
     last_error: AIResponseError | None = None
     max_attempts = 3
     for attempt in range(max_attempts):
@@ -1009,7 +1256,7 @@ def _call_with_retries(
                 model=model_name,
                 messages=messages,
                 temperature=0.3,
-                max_completion_tokens=512,
+                max_tokens=completion_cap,
                 extra_body={"enable_thinking": False},
             )
         except APIConnectionError as exc:
@@ -1030,6 +1277,8 @@ def _call_with_retries(
                 choice.message.content,
                 include_summary=include_summary,
                 include_skills=include_skills,
+                max_skill_categories=max_skill_categories,
+                max_skills_per_category=max_skills_per_category,
             )
         except AIResponseError as exc:
             last_error = exc
@@ -1045,18 +1294,19 @@ def _call_with_retries(
                 ]
             continue
 
+        sanitizer_info = parsed.pop("_sanitizer_info", None)
+        if sanitizer_info:
+            packer_info["sanitizer"] = sanitizer_info
+
         dropped: list[str] = []
         if include_skills:
             filtered, dropped = filter_skill_categories(parsed["skill_categories"], skills_map)
-            if not filtered:
-                last_error = AIResponseError(
-                    "All skills were rejected as not in skills_map"
+            if dropped:
+                unique_dropped = _unique_preserve_order(dropped)
+                print(
+                    f"[ai] filtered {len(unique_dropped)} unknown skills: "
+                    f"{', '.join(unique_dropped)}"
                 )
-                if attempt < max_attempts - 1:
-                    messages = messages + [
-                        {"role": "user", "content": _rejected_skills_message(dropped)},
-                    ]
-                continue
             parsed = {"summary": parsed["summary"], "skill_categories": filtered}
 
         if include_skills:
@@ -1069,21 +1319,13 @@ def _call_with_retries(
                 max_chars_per_line=max_chars_per_skill_line,
             )
             parsed["skill_categories"] = guarded
+            if sanitizer_info:
+                packer_info["sanitizer"] = sanitizer_info
             if not parsed["skill_categories"]:
-                last_error = AIResponseError(
-                    "Skills could not be fitted to the configured layout limits"
+                raise AIResponseError(
+                    "No skills could be packed from the skills map for this job description. "
+                    "Check background.md skills_map and the job description."
                 )
-                if attempt < max_attempts - 1:
-                    messages = messages + [
-                        {
-                            "role": "user",
-                            "content": (
-                                "Use fewer categories and shorter skill names so each category "
-                                "fits on one line. Reply again with ONLY the JSON object."
-                            ),
-                        }
-                    ]
-                continue
 
         parsed = _merge_parsed_with_preserved(
             parsed,
@@ -1102,14 +1344,8 @@ def _call_with_retries(
         else:
             print("[ai] skills-only mode: line-capacity layout (no combined char budget)")
 
-        if dropped and attempt < max_attempts - 1:
-            messages = messages + [
-                {"role": "user", "content": _rejected_skills_message(dropped)},
-            ]
-            continue
-
         if not apply_char_budget or char_count <= ai_output_max_chars:
-            return parsed, dropped, packer_info
+            return parsed, _unique_preserve_order(dropped), packer_info
 
         last_error = AIResponseError(
             f"Model output exceeded character budget ({char_count} > {ai_output_max_chars})"
@@ -1149,12 +1385,14 @@ def _call_with_retries(
                 max_chars_per_line=max_chars_per_skill_line,
             )
             trimmed["skill_categories"] = guarded
+            if sanitizer_info:
+                packer_info["sanitizer"] = sanitizer_info
         print(
             "[ai] trimmed output chars: "
             f"{ai_output_char_count(trimmed['summary'], trimmed['skill_categories'], include_summary=include_summary, include_skills=include_skills)}"
             f"/{ai_output_max_chars}"
         )
-        return trimmed, dropped, packer_info
+        return trimmed, _unique_preserve_order(dropped), packer_info
 
     assert last_error is not None
     raise last_error
@@ -1173,13 +1411,14 @@ def generate_tailored_content(
     max_skill_categories: int = DEFAULT_MAX_SKILL_CATEGORIES,
     max_skills_per_category: int = DEFAULT_MAX_SKILLS_PER_CATEGORY,
     max_chars_per_skill_line: int = DEFAULT_MAX_CHARS_PER_SKILL_LINE,
+    max_completion_tokens: int | None = None,
     background_data: dict[str, Any] | None = None,
     content_selection: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], list[str], dict[str, Any]]:
     """
     Call local LLM and return (parsed JSON, dropped skill warnings, packer diagnostics).
 
-    Retries on JSON parse failure, hallucinated skills, and character budget overflow.
+    Retries on JSON parse failure and character budget overflow.
     """
     if not include_summary and not include_skills:
         return dict(EMPTY_AI_OUTPUT), [], {
@@ -1248,6 +1487,7 @@ def generate_tailored_content(
             max_skill_categories=max_skill_categories,
             max_skills_per_category=max_skills_per_category,
             max_chars_per_skill_line=max_chars_per_skill_line,
+            max_completion_tokens=max_completion_tokens,
         )
     except AIResponseError as exc:
         if "Cannot connect to local model API" in str(exc):
@@ -1274,6 +1514,7 @@ def revise_tailored_content(
     max_skill_categories: int = DEFAULT_MAX_SKILL_CATEGORIES,
     max_skills_per_category: int = DEFAULT_MAX_SKILLS_PER_CATEGORY,
     max_chars_per_skill_line: int = DEFAULT_MAX_CHARS_PER_SKILL_LINE,
+    max_completion_tokens: int | None = None,
     background_data: dict[str, Any] | None = None,
     content_selection: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], list[str], dict[str, Any]]:
@@ -1366,6 +1607,7 @@ def revise_tailored_content(
             max_skill_categories=max_skill_categories,
             max_skills_per_category=max_skills_per_category,
             max_chars_per_skill_line=max_chars_per_skill_line,
+            max_completion_tokens=max_completion_tokens,
         )
     except AIResponseError as exc:
         if "Cannot connect to local model API" in str(exc):

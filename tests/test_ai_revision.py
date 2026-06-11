@@ -16,6 +16,7 @@ from ai import (
     parse_skill_categories,
     parse_response,
     revise_tailored_content,
+    _call_with_retries,
 )
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -57,7 +58,7 @@ def test_parse_response_accepts_skill_categories() -> None:
     }
     parsed = parse_response(json.dumps(payload))
     assert parsed["summary"] == "Backend engineer."
-    assert parsed["skill_categories"][0]["name"] == "Languages"
+    assert parsed["skill_categories"][0]["name"] == ""
 
 
 def test_parse_response_migrates_legacy_skills() -> None:
@@ -123,7 +124,9 @@ def test_revise_tailored_content_calls_model_and_returns_json() -> None:
         )
 
     assert result["summary"] == revised["summary"]
-    assert result["skill_categories"] == revised["skill_categories"]
+    assert result["skill_categories"][0]["skills"] == ["Python", "Go"]
+    assert result["skill_categories"][1]["skills"] == ["PostgreSQL"]
+    assert all(cat["name"] == "" for cat in result["skill_categories"])
     assert isinstance(warnings, list)
     mock_client.chat.completions.create.assert_called_once()
 
@@ -198,7 +201,9 @@ def test_revise_tailored_content_retries_on_invalid_json() -> None:
             model_name="test-model",
         )
 
-    assert result == revised
+    assert result["summary"] == revised["summary"]
+    assert result["skill_categories"][0]["name"] == ""
+    assert result["skill_categories"][0]["skills"] == ["Python", "Go"]
     assert mock_client.chat.completions.create.call_count == 2
 
 
@@ -231,3 +236,46 @@ def test_revise_tailored_content_raises_after_invalid_json_exhausted() -> None:
             )
 
     assert mock_client.chat.completions.create.call_count == 3
+
+
+def test_call_with_retries_accepts_partial_dropped_skills_without_retry() -> None:
+    payload = {
+        "skill_categories": [
+            {"name": "", "skills": ["Python", "FakeTool", "Go"]},
+        ],
+    }
+    mock_choice = MagicMock()
+    mock_choice.finish_reason = "stop"
+    mock_choice.message.content = json.dumps(payload)
+    mock_response = MagicMock()
+    mock_response.choices = [mock_choice]
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.return_value = mock_response
+
+    skills_map = {"languages": ["Python", "Go"]}
+    passthrough_guard = lambda cats, *_a, **_k: (
+        cats or [{"name": "", "skills": ["Python", "Go"]}],
+        {
+            "removed_skills": [],
+            "deduped_skills": [],
+            "added_skills": [],
+            "line_utilization": [],
+        },
+    )
+    with patch("ai.apply_skills_guardrails", side_effect=passthrough_guard):
+        parsed, dropped, _packer = _call_with_retries(
+            mock_client,
+            model_name="test-model",
+            messages=[{"role": "user", "content": "JD"}],
+            background_text="",
+            job_description="Python role",
+            skills_map=skills_map,
+            ai_output_max_chars=600,
+            include_summary=False,
+            include_skills=True,
+            max_skill_categories=3,
+        )
+
+    assert "FakeTool" in dropped
+    mock_client.chat.completions.create.assert_called_once()
+    assert parsed["skill_categories"]

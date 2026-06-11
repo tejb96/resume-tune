@@ -448,7 +448,6 @@ def generate_content_selection(
                 model=model_name,
                 messages=messages,
                 temperature=0.1,
-                max_completion_tokens=512,
                 extra_body={"enable_thinking": False},
             )
         except APIConnectionError as exc:

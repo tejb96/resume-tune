@@ -20,9 +20,11 @@ enable_ats_compat = true
 min_project_entries = 1
 min_project_bullets = 1
 # Skills layout (enforced at generation — never trimmed during page fitting).
-max_skill_categories = 4
+max_skill_categories = 3
 max_skills_per_category = 5
 max_chars_per_skill_line = 88
+# Optional hard cap on model completion tokens; omit to auto-compute from layout above.
+# max_completion_tokens = 130
 # Export only the first N certifications from background.md (AWS SAA first).
 max_certifications = 1
 # Sections to include, in render order (after header).

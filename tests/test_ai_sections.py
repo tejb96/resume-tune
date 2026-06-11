@@ -13,11 +13,14 @@ from ai import (
     ai_output_char_count,
     apply_skills_guardrails,
     enforce_output_budget,
+    estimate_max_completion_tokens,
     generate_tailored_content,
     normalize_ai_output,
     parse_response,
     revise_tailored_content,
+    sanitize_parsed_skill_categories,
     skills_subject_to_char_budget,
+    _call_with_retries,
 )
 from resume import trim_summary_one_step
 
@@ -32,7 +35,7 @@ def test_parse_response_accepts_skills_only() -> None:
     }
     parsed = parse_response(json.dumps(payload), include_summary=False, include_skills=True)
     assert parsed["summary"] == ""
-    assert parsed["skill_categories"][0]["name"] == "Languages"
+    assert parsed["skill_categories"][0]["name"] == ""
 
 
 def test_parse_response_accepts_array_skill_categories_with_empty_name() -> None:
@@ -64,6 +67,41 @@ def test_parse_response_accepts_array_skill_categories_without_empty_name() -> N
         "name": "",
         "skills": ["AWS", "Docker"],
     }
+
+
+def test_parse_response_accepts_comma_joined_skills_in_array() -> None:
+    payload = {
+        "skill_categories": [
+            ["", "JavaScript, PHP, React, SQL"],
+            ["", "AWS, Docker, GCP"],
+        ],
+    }
+    parsed = parse_response(json.dumps(payload), include_summary=False, include_skills=True)
+    assert parsed["skill_categories"][0]["skills"] == ["JavaScript", "PHP", "React", "SQL"]
+    assert parsed["skill_categories"][1]["skills"] == ["AWS", "Docker", "GCP"]
+
+
+def test_parse_response_accepts_flat_string_skill_lines() -> None:
+    payload = {
+        "skill_categories": [
+            "",
+            "JavaScript, PHP, React, SQL",
+            "AWS, Docker, GCP",
+            "MySQL",
+        ],
+    }
+    parsed = parse_response(json.dumps(payload), include_summary=False, include_skills=True)
+    assert parsed["skill_categories"][0]["skills"] == ["JavaScript", "PHP", "React", "SQL"]
+    assert parsed["skill_categories"][1]["skills"] == ["AWS", "Docker", "GCP"]
+    assert parsed["skill_categories"][2]["skills"] == ["MySQL"]
+
+
+def test_parse_response_repairs_truncated_json() -> None:
+    raw = '{"skill_categories": ["", "JavaScript, PHP, React, SQL", "AWS, Docker, GCP", "MySQL", ""]'
+    parsed = parse_response(raw, include_summary=False, include_skills=True)
+    assert parsed["skill_categories"][0]["skills"] == ["JavaScript", "PHP", "React", "SQL"]
+    assert parsed["skill_categories"][1]["skills"] == ["AWS", "Docker", "GCP"]
+    assert parsed["skill_categories"][2]["skills"] == ["MySQL"]
 
 
 def test_parse_response_accepts_summary_only() -> None:
@@ -136,10 +174,10 @@ def test_apply_skills_guardrails_topup_tools_bucket() -> None:
         jd,
         max_chars_per_line=88,
     )
-    cloud_skills = guarded[0]["skills"]
-    assert "Git" not in cloud_skills
     all_skills = [s for cat in guarded for s in cat["skills"]]
     assert "Git" in all_skills
+    assert "Python" in all_skills
+    assert "Docker" in all_skills
     assert "Agile" not in all_skills
 
 
@@ -221,6 +259,12 @@ def test_generate_tailored_content_skills_only_uses_skills_prompt() -> None:
     assert "skill_categories" in system_prompt
     assert ai_output["summary"] == ""
     assert ai_output["skill_categories"][0]["skills"] == ["Python", "Go"]
+    create_kwargs = mock_client.chat.completions.create.call_args.kwargs
+    assert create_kwargs["max_tokens"] == estimate_max_completion_tokens(
+        include_summary=False,
+        include_skills=True,
+        max_skill_categories=4,
+    )
 
 
 def test_generate_tailored_content_summary_only_uses_summary_prompt() -> None:
@@ -315,3 +359,63 @@ def test_revise_tailored_content_raises_when_both_excluded() -> None:
             include_summary=False,
             include_skills=False,
         )
+
+
+def test_sanitize_truncates_categories_and_skills() -> None:
+    categories = [
+        {"name": "A", "skills": ["Python", "Go", "Rust", "Java", "C", "C++"]},
+        {"name": "B", "skills": ["AWS"]},
+        {"name": "C", "skills": ["Docker"]},
+        {"name": "D", "skills": ["Git"]},
+    ]
+    sanitized, info = sanitize_parsed_skill_categories(
+        categories,
+        max_categories=3,
+        max_skills_per_category=5,
+    )
+    assert len(sanitized) == 3
+    assert all(cat["name"] == "" for cat in sanitized)
+    assert len(sanitized[0]["skills"]) == 5
+    assert info["truncated_categories"] == 1
+    assert info["truncated_skills"] == 1
+    assert info["stripped_category_names"] == ["A", "B", "C", "D"]
+
+
+def test_estimate_max_completion_tokens_skills_only_three_lines() -> None:
+    cap = estimate_max_completion_tokens(
+        include_summary=False,
+        include_skills=True,
+        max_skill_categories=3,
+        max_chars_per_skill_line=88,
+    )
+    assert cap == 129
+
+
+def test_estimate_max_completion_tokens_skills_only_four_lines() -> None:
+    cap = estimate_max_completion_tokens(
+        include_summary=False,
+        include_skills=True,
+        max_skill_categories=4,
+        max_chars_per_skill_line=88,
+    )
+    assert cap == 170
+
+
+def test_parse_response_truncates_excess_categories() -> None:
+    payload = {
+        "skill_categories": [
+            {"name": "", "skills": ["Python"]},
+            {"name": "", "skills": ["Go"]},
+            {"name": "", "skills": ["Rust"]},
+            {"name": "", "skills": ["Java"]},
+            {"name": "", "skills": ["C"]},
+        ],
+    }
+    parsed = parse_response(
+        json.dumps(payload),
+        include_summary=False,
+        include_skills=True,
+        max_skill_categories=3,
+    )
+    assert len(parsed["skill_categories"]) == 3
+    assert parsed["_sanitizer_info"]["truncated_categories"] == 2

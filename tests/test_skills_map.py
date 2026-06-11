@@ -97,17 +97,17 @@ def test_apply_skills_guardrails_same_bucket_topup() -> None:
     assert "JavaScript" in info.get("added_skills", [])
 
 
-def test_apply_skills_guardrails_does_not_cross_buckets() -> None:
+def test_apply_skills_guardrails_packs_git_sequentially() -> None:
     categories = [{"name": "Languages", "skills": ["Python", "JavaScript", "SQL"]}]
-    guarded, info = apply_skills_guardrails(
+    guarded, _info = apply_skills_guardrails(
         categories,
         SAMPLE_MAP,
         "Need Python and Git",
         max_chars_per_line=88,
     )
-    assert "Git" not in guarded[0]["skills"]
     all_skills = [s for cat in guarded for s in cat["skills"]]
     assert "Git" in all_skills
+    assert "Python" in all_skills
 
 
 def test_unnamed_category_renders_without_label() -> None:

@@ -25,8 +25,6 @@ class SkillScore:
     buckets: tuple[str, ...]
 
 
-FILLER_LINE_UTILIZATION_THRESHOLD = 0.70
-
 # child_lower -> parent_lower: drop child when both labels are present.
 SKILL_PARENT_CHILD: dict[str, str] = {
     "aws saa": "aws",
@@ -34,14 +32,6 @@ SKILL_PARENT_CHILD: dict[str, str] = {
     "tailwind": "tailwind css",
     "github": "git",
 }
-
-# Four unnamed lines grouped by bucket similarity (order = pack priority for full-stack roles).
-LINE_GROUPS: tuple[frozenset[str], ...] = (
-    frozenset({"full_stack", "languages"}),
-    frozenset({"ai_ml"}),
-    frozenset({"cloud_devops"}),
-    frozenset({"tools"}),
-)
 
 FULL_STACK_JD_SIGNALS: tuple[str, ...] = (
     "full-stack",
@@ -54,27 +44,6 @@ FULL_STACK_JD_SIGNALS: tuple[str, ...] = (
     "javascript/typescript",
     "javascript / typescript",
 )
-
-# Buckets whose STRONG skills may share a rendered line (e.g. Python on a Full Stack line).
-BUCKET_AFFINITY: dict[str, frozenset[str]] = {
-    "full_stack": frozenset({"full_stack", "languages"}),
-    "languages": frozenset({"full_stack", "languages"}),
-    "ai_ml": frozenset({"ai_ml", "full_stack"}),
-    "cloud_devops": frozenset({"cloud_devops"}),
-    "tools": frozenset({"tools"}),
-}
-
-
-def _affinity_buckets(bucket: str) -> frozenset[str]:
-    return BUCKET_AFFINITY.get(bucket, frozenset({bucket}))
-
-
-def _skill_buckets_affinity(skill: str, skills_map: dict[str, list[str]]) -> set[str]:
-    affinity: set[str] = set()
-    for bucket in buckets_for_skill(skill, skills_map):
-        affinity.update(_affinity_buckets(bucket))
-    return affinity
-
 
 def _is_full_stack_jd(job_description: str) -> bool:
     text = job_description.lower()
@@ -103,14 +72,6 @@ def _bucket_role_rank(bucket: str, job_description: str) -> int:
 def _primary_bucket(skill: str, skills_map: dict[str, list[str]]) -> str:
     buckets = buckets_for_skill(skill, skills_map)
     return buckets[0] if buckets else ""
-
-
-def _line_group_index(skill: str, skills_map: dict[str, list[str]]) -> int:
-    buckets = set(buckets_for_skill(skill, skills_map))
-    for idx, group in enumerate(LINE_GROUPS):
-        if buckets & group:
-            return idx
-    return len(LINE_GROUPS) - 1
 
 
 def _web_stack_penalty(skill: str, job_description: str) -> int:
@@ -215,6 +176,45 @@ def _dedupe_skills_for_pack(
     return deduped
 
 
+def _try_place_skill_on_line(
+    name: str,
+    current: list[str],
+    skill: str,
+    scores: dict[str, SkillScore],
+    skills_map: dict[str, list[str]],
+    jd_keywords: list[str],
+    job_description: str,
+    max_chars_per_line: int,
+) -> list[str] | None:
+    """Return updated line skills if skill fits, displacing lower-priority items if needed."""
+    skill_key = _skill_pack_key(skill, scores, skills_map, jd_keywords, job_description)
+    trial = list(current)
+
+    if _skill_category_line_length(name, trial + [skill]) <= max_chars_per_line:
+        trial.append(skill)
+        return trial
+
+    while True:
+        droppable = [
+            i
+            for i, listed in enumerate(trial)
+            if _skill_pack_key(listed, scores, skills_map, jd_keywords, job_description)
+            > skill_key
+        ]
+        if not droppable:
+            return None
+        drop_idx = max(
+            droppable,
+            key=lambda i: _skill_pack_key(
+                trial[i], scores, skills_map, jd_keywords, job_description
+            ),
+        )
+        trial.pop(drop_idx)
+        if _skill_category_line_length(name, trial + [skill]) <= max_chars_per_line:
+            trial.append(skill)
+            return trial
+
+
 def build_packed_skill_lines(
     skills_map: dict[str, list[str]],
     job_description: str,
@@ -223,7 +223,7 @@ def build_packed_skill_lines(
     max_categories: int,
     max_chars_per_line: int,
 ) -> tuple[list[dict[str, Any]], dict[str, SkillScore], list[str]]:
-    """Build up to four unnamed lines grouped by bucket similarity."""
+    """Build up to N unnamed lines filled sequentially by JD relevance."""
     from ats import extract_jd_keywords
 
     scores = score_skills_for_job(skills_map, job_description, evidence_text)
@@ -244,38 +244,23 @@ def build_packed_skill_lines(
         key=lambda s: _skill_pack_key(s, scores, skills_map, jd_keywords, job_description)
     )
 
-    line_skills: list[list[str]] = [[] for _ in range(min(max_categories, len(LINE_GROUPS)))]
+    line_skills: list[list[str]] = [[] for _ in range(max_categories)]
+    name = ""
 
     for skill in eligible:
-        group_idx = _line_group_index(skill, skills_map)
-        if group_idx >= len(line_skills):
-            continue
-        name = ""
-        current = line_skills[group_idx]
-        skill_key = _skill_pack_key(skill, scores, skills_map, jd_keywords, job_description)
-
-        if _skill_category_line_length(name, current + [skill]) <= max_chars_per_line:
-            current.append(skill)
-            continue
-
-        while True:
-            droppable = [
-                i
-                for i, listed in enumerate(current)
-                if _skill_pack_key(listed, scores, skills_map, jd_keywords, job_description)
-                > skill_key
-            ]
-            if not droppable:
-                break
-            drop_idx = max(
-                droppable,
-                key=lambda i: _skill_pack_key(
-                    current[i], scores, skills_map, jd_keywords, job_description
-                ),
+        for line_idx in range(max_categories):
+            updated = _try_place_skill_on_line(
+                name,
+                line_skills[line_idx],
+                skill,
+                scores,
+                skills_map,
+                jd_keywords,
+                job_description,
+                max_chars_per_line,
             )
-            current.pop(drop_idx)
-            if _skill_category_line_length(name, current + [skill]) <= max_chars_per_line:
-                current.append(skill)
+            if updated is not None:
+                line_skills[line_idx] = updated
                 break
 
     packed: list[dict[str, Any]] = []
@@ -536,215 +521,6 @@ def _skill_category_line_length(name: str, skills: list[str]) -> int:
     return len(label) + 2 + len(joined)
 
 
-def _buckets_on_line(skills: list[str], skills_map: dict[str, list[str]]) -> set[str]:
-    buckets: set[str] = set()
-    for skill in skills:
-        buckets.update(buckets_for_skill(skill, skills_map))
-    return buckets
-
-
-def _line_utilization(name: str, skills: list[str], max_chars: int) -> float:
-    if max_chars <= 0:
-        return 1.0
-    return _skill_category_line_length(name, skills) / max_chars
-
-
-def _sort_skills_by_tier(
-    skills: list[str],
-    scores: dict[str, SkillScore],
-    *,
-    jd_keywords: list[str] | None = None,
-    job_description: str = "",
-) -> list[str]:
-    return sorted(
-        skills,
-        key=lambda s: (
-            scores.get(s, SkillScore(s, SkillTier.DROP, ())).tier,
-            _jd_priority(s, jd_keywords or [], job_description),
-            s.lower(),
-        ),
-    )
-
-
-def enforce_skills_layout_by_tier(
-    skill_categories: list[dict[str, Any]],
-    scores: dict[str, SkillScore],
-    *,
-    max_categories: int,
-    max_chars_per_line: int,
-    jd_keywords: list[str] | None = None,
-    job_description: str = "",
-) -> list[dict[str, Any]]:
-    """Cap categories and trim lines, removing lowest-tier skills first."""
-    result: list[dict[str, Any]] = []
-    for cat in skill_categories[:max_categories]:
-        name = cat["name"].strip()
-        skills = _sort_skills_by_tier(
-            [s.strip() for s in cat["skills"] if s.strip()],
-            scores,
-            jd_keywords=jd_keywords,
-            job_description=job_description,
-        )
-        while skills and _skill_category_line_length(name, skills) > max_chars_per_line:
-            drop_idx = max(
-                range(len(skills)),
-                key=lambda i: (
-                    scores.get(skills[i], SkillScore(skills[i], SkillTier.DROP, ())).tier,
-                    _jd_priority(skills[i], jd_keywords or [], job_description),
-                    -i,
-                ),
-            )
-            skills.pop(drop_idx)
-        if skills:
-            result.append({"name": name, "skills": skills})
-    return result
-
-
-def _direct_bucket_overlap(
-    cat: dict[str, Any],
-    skill: str,
-    skills_map: dict[str, list[str]],
-) -> bool:
-    return bool(_buckets_on_line(cat["skills"], skills_map) & set(buckets_for_skill(skill, skills_map)))
-
-
-def _line_compatible_with_skill(
-    cat: dict[str, Any],
-    skill: str,
-    skills_map: dict[str, list[str]],
-) -> bool:
-    if not cat["skills"]:
-        return set(buckets_for_skill(skill, skills_map)) != set()
-    line_buckets = _buckets_on_line(cat["skills"], skills_map)
-    return bool(line_buckets & _skill_buckets_affinity(skill, skills_map))
-
-
-def _category_name_for_skill(skill: str, skills_map: dict[str, list[str]]) -> str:
-    bucket = buckets_for_skill(skill, skills_map)[0] if buckets_for_skill(skill, skills_map) else ""
-    labels = {
-        "full_stack": "Full Stack",
-        "languages": "Languages",
-        "ai_ml": "AI / ML",
-        "cloud_devops": "Cloud & DevOps",
-        "tools": "Tools",
-    }
-    return labels.get(bucket, bucket.replace("_", " ").title())
-
-
-def _make_room_for_skill(
-    name: str,
-    skills: list[str],
-    new_skill: str,
-    scores: dict[str, SkillScore],
-    max_chars: int,
-    *,
-    jd_keywords: list[str],
-    job_description: str,
-) -> list[str] | None:
-    from ai import _skill_fits_line
-
-    current = list(skills)
-    new_priority = _jd_priority(new_skill, jd_keywords, job_description)
-
-    if _skill_fits_line(name, current, new_skill, max_chars):
-        current.append(new_skill)
-        return current
-
-    while current:
-        droppable = [
-            i
-            for i, skill in enumerate(current)
-            if scores.get(skill, SkillScore(skill, SkillTier.DROP, ())).tier > SkillTier.STRONG
-            or (
-                scores.get(skill, SkillScore(skill, SkillTier.DROP, ())).tier == SkillTier.STRONG
-                and _jd_priority(skill, jd_keywords, job_description) > new_priority
-            )
-        ]
-        if not droppable:
-            return None
-        drop_idx = max(
-            droppable,
-            key=lambda i: (
-                scores.get(current[i], SkillScore(current[i], SkillTier.DROP, ())).tier,
-                _jd_priority(current[i], jd_keywords, job_description),
-                -i,
-            ),
-        )
-        current.pop(drop_idx)
-        if _skill_fits_line(name, current, new_skill, max_chars):
-            current.append(new_skill)
-            return current
-    return None
-
-
-def ensure_strong_skills_present(
-    categories: list[dict[str, Any]],
-    skills_map: dict[str, list[str]],
-    scores: dict[str, SkillScore],
-    *,
-    max_chars_per_line: int,
-    max_categories: int,
-    jd_keywords: list[str],
-    job_description: str,
-) -> list[str]:
-    """Ensure every JD-strong skill appears, displacing lower-priority skills if needed."""
-    from ai import _skill_already_listed
-
-    added: list[str] = []
-    missing_strong = sorted(
-        [skill for skill, score in scores.items() if score.tier == SkillTier.STRONG],
-        key=lambda s: (_jd_priority(s, jd_keywords, job_description), s.lower()),
-    )
-    for skill in missing_strong:
-        if _skill_already_listed(skill, categories):
-            continue
-
-        direct = [
-            cat for cat in categories if _direct_bucket_overlap(cat, skill, skills_map)
-        ]
-        affinity_only = [
-            cat
-            for cat in categories
-            if _line_compatible_with_skill(cat, skill, skills_map)
-            and cat not in direct
-        ]
-
-        placed = False
-        if direct or affinity_only:
-            compatible = direct or affinity_only
-            compatible.sort(
-                key=lambda cat: _line_utilization(cat["name"], cat["skills"], max_chars_per_line)
-            )
-            for cat in compatible:
-                updated = _make_room_for_skill(
-                    cat["name"],
-                    cat["skills"],
-                    skill,
-                    scores,
-                    max_chars_per_line,
-                    jd_keywords=jd_keywords,
-                    job_description=job_description,
-                )
-                if updated is not None:
-                    cat["skills"] = _sort_skills_by_tier(
-                        updated,
-                        scores,
-                        jd_keywords=jd_keywords,
-                        job_description=job_description,
-                    )
-                    added.append(skill)
-                    placed = True
-                    break
-
-        if not placed and len(categories) < max_categories:
-            categories.append(
-                {"name": _category_name_for_skill(skill, skills_map), "skills": [skill]}
-            )
-            added.append(skill)
-
-    return added
-
-
 def select_relevant_skill_categories(
     skill_categories: list[dict[str, Any]],
     skills_map: dict[str, list[str]],
@@ -754,7 +530,7 @@ def select_relevant_skill_categories(
     max_categories: int,
     max_chars_per_line: int,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Rebuild skills into unnamed grouped lines packed by JD relevance."""
+    """Rebuild skills into unnamed lines packed sequentially by JD relevance."""
     from ai import skill_line_utilization
 
     llm_skills = [skill for cat in skill_categories for skill in cat["skills"]]
@@ -767,10 +543,19 @@ def select_relevant_skill_categories(
     )
     packed_skills = {s.lower() for cat in packed for s in cat["skills"]}
 
-    removed_irrelevant = sorted(
-        {s for s in llm_skills if s.lower() not in packed_skills},
-        key=str.lower,
-    )
+    removed_irrelevant: list[str] = []
+    removed_overflow: list[str] = []
+    for skill in llm_skills:
+        if skill.lower() in packed_skills:
+            continue
+        score = scores.get(skill)
+        if score and _eligible_for_pack(skill, score, job_description, skills_map):
+            removed_overflow.append(skill)
+        else:
+            removed_irrelevant.append(skill)
+
+    removed_irrelevant.sort(key=str.lower)
+    removed_overflow.sort(key=str.lower)
     added_skills = sorted(
         {s for cat in packed for s in cat["skills"] if s not in llm_skills},
         key=str.lower,
@@ -785,6 +570,7 @@ def select_relevant_skill_categories(
 
     diagnostics = {
         "removed_irrelevant": removed_irrelevant,
+        "removed_overflow": removed_overflow,
         "dropped_categories": [
             (cat.get("name") or ", ".join(cat["skills"][:3])).strip()
             for cat in skill_categories

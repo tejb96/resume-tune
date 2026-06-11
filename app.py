@@ -166,6 +166,7 @@ def skills_layout_kwargs() -> dict:
         "max_skill_categories": max_skill_categories,
         "max_skills_per_category": max_skills_per_category,
         "max_chars_per_skill_line": max_chars_per_skill_line,
+        "max_completion_tokens": max_completion_tokens,
     }
 
 
@@ -287,6 +288,7 @@ def render_skill_packer_diagnostic(packer_info: dict | None) -> None:
     deduped = packer_info.get("deduped_skills") or []
     added = packer_info.get("added_skills") or []
     removed_irrelevant = packer_info.get("removed_irrelevant") or []
+    removed_overflow = packer_info.get("removed_overflow") or []
     dropped_categories = packer_info.get("dropped_categories") or []
     lines = packer_info.get("line_utilization") or []
     if (
@@ -294,18 +296,23 @@ def render_skill_packer_diagnostic(packer_info: dict | None) -> None:
         and not deduped
         and not added
         and not removed_irrelevant
+        and not removed_overflow
         and not dropped_categories
         and not lines
     ):
         return
     with st.expander(
         "Skills guardrails",
-        expanded=bool(removed or deduped or added or removed_irrelevant or dropped_categories),
+        expanded=bool(
+            removed or deduped or added or removed_irrelevant or removed_overflow or dropped_categories
+        ),
     ):
         if removed:
             st.caption("Removed (not in skills_map): **" + ", ".join(removed) + "**")
         if removed_irrelevant:
             st.caption("Removed (not job-relevant): **" + ", ".join(removed_irrelevant) + "**")
+        if removed_overflow:
+            st.caption("Removed (no line space): **" + ", ".join(removed_overflow) + "**")
         if dropped_categories:
             st.caption("Dropped categories: **" + ", ".join(dropped_categories) + "**")
         if deduped:
@@ -603,6 +610,9 @@ min_project_bullets = int(config.get("min_project_bullets", 1))
 max_skill_categories = int(config.get("max_skill_categories", 4))
 max_skills_per_category = int(config.get("max_skills_per_category", 5))
 max_chars_per_skill_line = int(config.get("max_chars_per_skill_line", 88))
+max_completion_tokens = config.get("max_completion_tokens")
+if max_completion_tokens is not None:
+    max_completion_tokens = int(max_completion_tokens)
 max_certifications = int(config.get("max_certifications", 1))
 resume_sections = config["resume_sections"]
 include_summary = "summary" in resume_sections

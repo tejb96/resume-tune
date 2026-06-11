@@ -87,5 +87,17 @@ def load_settings() -> dict:
             config.get("max_chars_per_skill_line", DEFAULT_MAX_CHARS_PER_SKILL_LINE)
         ),
         "max_certifications": int(config.get("max_certifications", 1)),
+        "max_completion_tokens": _optional_int(config.get("max_completion_tokens")),
         "tracker_file": str(config.get("tracker_file", "./output/applications.xlsx")),
     }
+
+
+def _optional_int(value: object) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    text = str(value).strip()
+    if not text:
+        return None
+    return int(text)

@@ -7,6 +7,7 @@ from pathlib import Path
 from ai import apply_skills_guardrails
 from skills_selection import (
     SkillTier,
+    build_packed_skill_lines,
     dedupe_redundant_skills,
     flatten_static_evidence_text,
     score_skills_for_job,
@@ -171,9 +172,9 @@ def test_guardrails_topup_javascript_on_short_languages_line() -> None:
     assert "JavaScript" in info.get("added_skills", [])
 
 
-def test_guardrails_does_not_cross_buckets() -> None:
+def test_guardrails_packs_git_sequentially() -> None:
     categories = [{"name": "Languages", "skills": ["Python", "JavaScript", "SQL"]}]
-    guarded, info = apply_skills_guardrails(
+    guarded, _info = apply_skills_guardrails(
         categories,
         {
             "languages": ["Python", "JavaScript", "SQL"],
@@ -182,12 +183,12 @@ def test_guardrails_does_not_cross_buckets() -> None:
         "Need Python and Git",
         max_chars_per_line=88,
     )
-    assert "Git" not in guarded[0]["skills"]
     all_skills = [s for cat in guarded for s in cat["skills"]]
     assert "Git" in all_skills
+    assert "Python" in all_skills
 
 
-def test_guardrails_does_not_add_git_to_cloud_line() -> None:
+def test_guardrails_packs_git_with_core_skills() -> None:
     skills_map = {
         "cloud_devops": ["Python", "Docker"],
         "tools": ["Git", "Agile", "Jira"],
@@ -200,10 +201,127 @@ def test_guardrails_does_not_add_git_to_cloud_line() -> None:
         jd,
         max_chars_per_line=88,
     )
-    cloud_skills = guarded[0]["skills"]
-    assert "Git" not in cloud_skills
     all_skills = [s for cat in guarded for s in cat["skills"]]
     assert "Git" in all_skills
+    assert "Python" in all_skills
+    assert "Docker" in all_skills
+
+
+def test_sequential_fill_uses_line1_before_line2() -> None:
+    skills_map = {
+        "full_stack": [
+            "React",
+            "Next.js",
+            "TypeScript",
+            "Node.js",
+            "Express.js",
+            "FastAPI",
+            "MongoDB",
+            "PostgreSQL",
+        ],
+        "tools": ["Git", "Agile"],
+    }
+    jd = "Full-stack React, Next.js, TypeScript, and Node.js developer."
+    evidence = (
+        "Built React and Next.js apps with TypeScript, Node.js, Express.js, "
+        "FastAPI, MongoDB, and PostgreSQL."
+    )
+    packed, _, _ = build_packed_skill_lines(
+        skills_map,
+        jd,
+        evidence,
+        max_categories=4,
+        max_chars_per_line=50,
+    )
+    assert len(packed) >= 2
+    line0_chars = len(", ".join(packed[0]["skills"]))
+    assert line0_chars >= 40
+    assert packed[1]["skills"]
+
+
+def test_no_sparse_bucket_lines() -> None:
+    skills_map = {
+        "full_stack": ["React", "Next.js", "TypeScript", "Tailwind CSS", "Redux"],
+        "ai_ml": ["TensorFlow.js"],
+        "cloud_devops": ["AWS", "Docker"],
+        "languages": ["Python", "JavaScript"],
+    }
+    jd = "Full-stack React developer with TypeScript and Next.js."
+    evidence = (
+        "React, Next.js, TypeScript, Tailwind CSS, Redux, TensorFlow.js, "
+        "AWS, Docker, Python, JavaScript."
+    )
+    packed, _, _ = build_packed_skill_lines(
+        skills_map,
+        jd,
+        evidence,
+        max_categories=4,
+        max_chars_per_line=88,
+    )
+    for idx in range(len(packed) - 1):
+        chars = len(", ".join(packed[idx]["skills"]))
+        remaining = 88 - chars
+        next_chars = len(", ".join(packed[idx + 1]["skills"]))
+        if remaining > 10:
+            assert next_chars >= 20 or remaining <= 10
+
+
+def test_frontend_skills_pack_after_core() -> None:
+    skills_map = {
+        "full_stack": [
+            "React",
+            "Next.js",
+            "TypeScript",
+            "Tailwind CSS",
+            "Material UI",
+            "Redux",
+            "Shadcn/ui",
+            "Node.js",
+            "FastAPI",
+        ],
+        "ai_ml": ["TensorFlow.js", "OpenAI API"],
+        "cloud_devops": ["AWS", "Docker", "GitHub Actions"],
+        "languages": ["Python", "JavaScript"],
+    }
+    jd = "Full-stack developer: React, Next.js, TypeScript, Node.js, FastAPI."
+    evidence = (
+        "MERN stack with React, Redux, Material UI, Tailwind CSS, Shadcn/ui, "
+        "TensorFlow.js on RepVision, AWS, Docker, GitHub Actions."
+    )
+    packed, _, _ = build_packed_skill_lines(
+        skills_map,
+        jd,
+        evidence,
+        max_categories=4,
+        max_chars_per_line=88,
+    )
+    all_skills = [s for cat in packed for s in cat["skills"]]
+    assert "Tailwind CSS" in all_skills or "Redux" in all_skills
+    if "TensorFlow.js" in all_skills:
+        tf_line = next(i for i, cat in enumerate(packed) if "TensorFlow.js" in cat["skills"])
+        line_chars = len(", ".join(packed[tf_line]["skills"]))
+        assert line_chars >= 20 or tf_line == 0
+
+
+def test_diagnostics_split_overflow_vs_irrelevant() -> None:
+    evidence = flatten_static_evidence_text(BACKEND_BACKGROUND)
+    categories = [
+        {"name": "", "skills": ["Python", "Kubernetes", "AWS", "CloudFront", "Jira"]},
+    ]
+    _, info = select_relevant_skill_categories(
+        categories,
+        {
+            **SAMPLE_MAP,
+            "cloud_devops": ["AWS", "CloudFront", "Docker", "Kubernetes"],
+        },
+        "Need Python, Kubernetes, and AWS experience.",
+        evidence,
+        max_categories=4,
+        max_chars_per_line=88,
+    )
+    assert "CloudFront" in info["removed_irrelevant"]
+    assert "Jira" in info["removed_irrelevant"]
+    assert "removed_overflow" in info
 
 
 def test_trim_removes_filler_before_strong() -> None:
