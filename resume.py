@@ -1043,7 +1043,9 @@ def _page_fit_diagnostics(
         )
         omitted_high_quality_count = len(omitted)
         if omitted:
-            trial_selection = selection_with_all_items(content_selection, omitted)
+            trial_selection = selection_with_all_items(
+                content_selection, omitted, background_data=background_data
+            )
             _docx, trial_pdf, trial_pages = render_page_count(
                 trial_selection, ai_output_for_render
             )

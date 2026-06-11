@@ -115,6 +115,78 @@ def _education_list(background_data: dict[str, Any]) -> list[dict[str, Any]]:
     return education if isinstance(education, list) else []
 
 
+def parse_resume_date(value: str) -> tuple[int, int]:
+    """Parse YYYY-MM, YYYY, or present into (year, month) for sorting."""
+    v = value.strip().lower()
+    if not v:
+        return (0, 0)
+    if v == "present":
+        return (9999, 12)
+    if "-" in v:
+        year_s, month_s = v.split("-", 1)
+        try:
+            return (int(year_s), int(month_s))
+        except ValueError:
+            return (0, 0)
+    try:
+        return (int(v), 0)
+    except ValueError:
+        return (0, 0)
+
+
+def entry_has_dates(entry: dict[str, Any]) -> bool:
+    return bool(str(entry.get("start", "")).strip() or str(entry.get("end", "")).strip())
+
+
+def entry_recency_key(entry: dict[str, Any]) -> tuple[int, int, int, int]:
+    end = parse_resume_date(str(entry.get("end", "")))
+    start = parse_resume_date(str(entry.get("start", "")))
+    return (end[0], end[1], start[0], start[1])
+
+
+def sort_experience_selections(
+    selection: dict[str, Any],
+    background_data: dict[str, Any],
+) -> None:
+    """Sort experience_selections most-recent-first by job end/start dates."""
+    experience = _experience_list(background_data)
+    entries = selection.get("experience_selections", [])
+    if not entries:
+        return
+
+    def sort_key(entry: dict[str, Any]) -> tuple[int, ...]:
+        role_index = entry["role_index"]
+        if role_index < len(experience):
+            recency = entry_recency_key(experience[role_index])
+            return tuple(-part for part in recency)
+        return (0, 0, 0, 0)
+
+    entries.sort(key=sort_key)
+
+
+def sort_project_selections(
+    selection: dict[str, Any],
+    background_data: dict[str, Any],
+) -> None:
+    """Sort project_selections by date when present; otherwise by background index."""
+    projects = _projects_list(background_data)
+    entries = selection.get("project_selections", [])
+    if not entries:
+        return
+
+    def sort_key(entry: dict[str, Any]) -> tuple[Any, ...]:
+        project_index = entry["project_index"]
+        if project_index >= len(projects):
+            return (1, project_index)
+        project = projects[project_index]
+        if entry_has_dates(project):
+            recency = entry_recency_key(project)
+            return (0, tuple(-part for part in recency), project_index)
+        return (1, project_index)
+
+    entries.sort(key=sort_key)
+
+
 def heuristic_ratings(background_data: dict[str, Any]) -> ContentRatings:
     """Fallback 1-5 ratings when the LLM fails (recency-biased, no fine scores)."""
     ratings = ContentRatings()
@@ -398,13 +470,16 @@ def build_selection_from_scores(
     if not education_indices and edu_scored:
         education_indices = [edu_scored[0][0]]
 
-    return {
+    result = {
         "experience_selections": experience_selections,
         "project_selections": project_selections,
         "education_indices": education_indices,
         "content_ratings": ratings_to_dict(ratings),
         "content_composites": composites,
     }
+    sort_experience_selections(result, background_data)
+    sort_project_selections(result, background_data)
+    return result
 
 
 def _anchor_role_index(
@@ -770,7 +845,12 @@ def _pick_expand_candidate(expandable: list[ExpandableItem]) -> ExpandableItem |
     return candidates[0]
 
 
-def _add_expand_item(selection: dict[str, Any], item: ExpandableItem) -> dict[str, Any]:
+def _add_expand_item(
+    selection: dict[str, Any],
+    item: ExpandableItem,
+    *,
+    background_data: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     result = {
         "experience_selections": [
             {"role_index": e["role_index"], "bullet_indices": list(e["bullet_indices"])}
@@ -817,6 +897,10 @@ def _add_expand_item(selection: dict[str, Any], item: ExpandableItem) -> dict[st
             result["education_indices"].append(item.education_index)
             result["education_indices"].sort()
 
+    if background_data is not None:
+        sort_experience_selections(result, background_data)
+        sort_project_selections(result, background_data)
+
     return result
 
 
@@ -838,7 +922,7 @@ def expand_selection_by_highest_score(
     if candidate is None:
         return selection, None
 
-    updated = _add_expand_item(selection, candidate)
+    updated = _add_expand_item(selection, candidate, background_data=background_data)
     expand_event = {
         "added": candidate.key,
         "composite": candidate.composite,
@@ -879,11 +963,13 @@ def high_quality_omitted_items(
 def selection_with_all_items(
     selection: dict[str, Any],
     items: list[ExpandableItem],
+    *,
+    background_data: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return a copy of selection with all given expandable items added."""
     updated = selection
     for item in items:
-        updated = _add_expand_item(updated, item)
+        updated = _add_expand_item(updated, item, background_data=background_data)
     return updated
 
 

@@ -16,6 +16,8 @@ from scoring import (
     heuristic_ratings,
     inventory_selection_policy,
     ratings_from_payload,
+    sort_experience_selections,
+    sort_project_selections,
 )
 
 DEFAULT_MIN_PROJECT_ENTRIES = 1
@@ -227,8 +229,27 @@ def apply_content_selection(
     projects = _projects_list(background_data)
     education = _education_list(background_data)
 
+    ordered_selection = {
+        "experience_selections": [
+            {
+                "role_index": e["role_index"],
+                "bullet_indices": list(e["bullet_indices"]),
+            }
+            for e in selection.get("experience_selections", [])
+        ],
+        "project_selections": [
+            {
+                "project_index": p["project_index"],
+                "bullet_indices": list(p["bullet_indices"]),
+            }
+            for p in selection.get("project_selections", [])
+        ],
+    }
+    sort_experience_selections(ordered_selection, background_data)
+    sort_project_selections(ordered_selection, background_data)
+
     selected_experience: list[dict[str, Any]] = []
-    for entry in selection.get("experience_selections", []):
+    for entry in ordered_selection["experience_selections"]:
         role_index = entry["role_index"]
         job = deepcopy(experience[role_index])
         source_bullets = experience[role_index].get("bullets", [])
@@ -236,7 +257,7 @@ def apply_content_selection(
         selected_experience.append(job)
 
     selected_projects: list[dict[str, Any]] = []
-    for entry in selection.get("project_selections", []):
+    for entry in ordered_selection["project_selections"]:
         project_index = entry["project_index"]
         project = deepcopy(projects[project_index])
         source_bullets = projects[project_index].get("bullets", [])

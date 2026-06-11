@@ -99,7 +99,9 @@ def test_ratings_build_selects_relevant_role_and_bullets(sample_background: dict
         policy=SelectionPolicy(max_experience_entries=2, max_bullets_per_role=2),
     )
     role_indices = [e["role_index"] for e in selection["experience_selections"]]
-    assert role_indices[0] == 1
+    assert role_indices == [0, 1]
+    exp_by_role = {e["role_index"]: e for e in selection["experience_selections"]}
+    assert exp_by_role[1]["bullet_indices"] == [0, 1]
     assert selection["project_selections"][0]["project_index"] == 0
     assert "content_composites" in selection
 

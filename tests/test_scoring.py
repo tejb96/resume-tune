@@ -37,6 +37,94 @@ def test_chem_role_caps_high_strength_bullet() -> None:
     assert composite < swe
 
 
+def test_experience_ordered_by_recency_not_relevance() -> None:
+    background = {
+        "experience": [
+            {
+                "company": "Recent Co",
+                "title": "Engineer",
+                "start": "2023-01",
+                "end": "present",
+                "bullets": ["Recent work"],
+            },
+            {
+                "company": "Old Co",
+                "title": "Engineer",
+                "start": "2015-01",
+                "end": "2018-12",
+                "bullets": ["Older work"],
+            },
+        ],
+        "projects": [],
+        "education": [],
+    }
+    ratings = ContentRatings(
+        roles={0: 2, 1: 5},
+        experience_bullets={(0, 0): 2, (1, 0): 5},
+    )
+    selection = build_selection_from_scores(
+        background,
+        ratings,
+        policy=SelectionPolicy(max_experience_entries=2, min_role_relevance_rating=2),
+    )
+    role_indices = [e["role_index"] for e in selection["experience_selections"]]
+    assert role_indices == [0, 1]
+
+
+def test_projects_ordered_by_date_when_present() -> None:
+    background = {
+        "experience": [],
+        "projects": [
+            {
+                "name": "Older",
+                "start": "2018-01",
+                "end": "2019-12",
+                "bullets": ["Old project"],
+            },
+            {
+                "name": "Newer",
+                "start": "2023-01",
+                "end": "2024-06",
+                "bullets": ["New project"],
+            },
+        ],
+        "education": [],
+    }
+    ratings = ContentRatings(
+        projects={0: 5, 1: 2},
+        project_bullets={(0, 0): 5, (1, 0): 2},
+    )
+    selection = build_selection_from_scores(
+        background,
+        ratings,
+        policy=SelectionPolicy(max_project_entries=2, min_project_composite=0.0),
+    )
+    project_indices = [p["project_index"] for p in selection["project_selections"]]
+    assert project_indices == [1, 0]
+
+
+def test_projects_without_dates_keep_background_order() -> None:
+    background = {
+        "experience": [],
+        "projects": [
+            {"name": "First", "bullets": ["A"]},
+            {"name": "Second", "bullets": ["B"]},
+        ],
+        "education": [],
+    }
+    ratings = ContentRatings(
+        projects={0: 2, 1: 5},
+        project_bullets={(0, 0): 2, (1, 0): 5},
+    )
+    selection = build_selection_from_scores(
+        background,
+        ratings,
+        policy=SelectionPolicy(max_project_entries=2, min_project_composite=0.0),
+    )
+    project_indices = [p["project_index"] for p in selection["project_selections"]]
+    assert project_indices == [0, 1]
+
+
 def test_build_excludes_irrelevant_role() -> None:
     background = {
         "experience": [
