@@ -707,15 +707,6 @@ def _add_project_entry(doc: Document, project: dict[str, Any]) -> None:
         _add_bullet(doc, bullet)
 
 
-def _prevent_orphan_word(text: str) -> str:
-    """Join last 2 words with non-breaking spaces to avoid a lone short word wrapping."""
-    words = text.split()
-    if len(words) < 3:
-        return text
-    head, tail = words[:-2], words[-2:]
-    return " ".join(head) + "\u00a0" + "\u00a0".join(tail)
-
-
 def _add_bullet(doc: Document, text: str) -> None:
     p = doc.add_paragraph()
     _configure_bullet_paragraph(p)
@@ -725,7 +716,7 @@ def _add_bullet(doc: Document, text: str) -> None:
     bullet_run = p.add_run("▪")
     _format_run(bullet_run, color=ACCENT_COLOR)
     p.add_run("\t")
-    text_run = p.add_run(_prevent_orphan_word(text))
+    text_run = p.add_run(text)
     _format_run(text_run)
 
 

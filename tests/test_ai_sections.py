@@ -35,6 +35,37 @@ def test_parse_response_accepts_skills_only() -> None:
     assert parsed["skill_categories"][0]["name"] == "Languages"
 
 
+def test_parse_response_accepts_array_skill_categories_with_empty_name() -> None:
+    payload = {
+        "skill_categories": [
+            ["", "AWS", "GCP", "Docker"],
+            {"name": "", "skills": ["PHP", "React"]},
+        ],
+    }
+    parsed = parse_response(json.dumps(payload), include_summary=False, include_skills=True)
+    assert parsed["skill_categories"][0] == {
+        "name": "",
+        "skills": ["AWS", "GCP", "Docker"],
+    }
+    assert parsed["skill_categories"][1] == {
+        "name": "",
+        "skills": ["PHP", "React"],
+    }
+
+
+def test_parse_response_accepts_array_skill_categories_without_empty_name() -> None:
+    payload = {
+        "skill_categories": [
+            ["AWS", "Docker"],
+        ],
+    }
+    parsed = parse_response(json.dumps(payload), include_summary=False, include_skills=True)
+    assert parsed["skill_categories"][0] == {
+        "name": "",
+        "skills": ["AWS", "Docker"],
+    }
+
+
 def test_parse_response_accepts_summary_only() -> None:
     payload = {"summary": "Backend engineer with Python experience."}
     parsed = parse_response(json.dumps(payload), include_summary=True, include_skills=False)

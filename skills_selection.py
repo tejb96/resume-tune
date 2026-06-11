@@ -27,6 +27,14 @@ class SkillScore:
 
 FILLER_LINE_UTILIZATION_THRESHOLD = 0.70
 
+# child_lower -> parent_lower: drop child when both labels are present.
+SKILL_PARENT_CHILD: dict[str, str] = {
+    "aws saa": "aws",
+    "tensorflow": "tensorflow.js",
+    "tailwind": "tailwind css",
+    "github": "git",
+}
+
 # Four unnamed lines grouped by bucket similarity (order = pack priority for full-stack roles).
 LINE_GROUPS: tuple[frozenset[str], ...] = (
     frozenset({"full_stack", "languages"}),
@@ -157,6 +165,40 @@ def _skill_pack_key(
     )
 
 
+def dedupe_redundant_skills(
+    skills: list[str],
+    *,
+    jd_keywords: list[str] | None = None,
+    job_description: str = "",
+) -> tuple[list[str], list[str]]:
+    """Drop redundant parent-child pairs; return (skills, removed_labels)."""
+    if not skills:
+        return [], []
+
+    keywords = jd_keywords or []
+    lowers = {s.lower(): s for s in skills}
+    present = set(lowers.keys())
+    drop: set[str] = set()
+    removed: list[str] = []
+
+    for child_lower, parent_lower in SKILL_PARENT_CHILD.items():
+        if child_lower not in present or parent_lower not in present:
+            continue
+        if child_lower == "tailwind":
+            prefer_css = "tailwind css" in job_description.lower() or any(
+                k.lower() == "tailwind css" for k in keywords
+            )
+            to_drop = "tailwind" if prefer_css else "tailwind css"
+        else:
+            to_drop = child_lower
+        if to_drop in drop:
+            continue
+        drop.add(to_drop)
+        removed.append(lowers[to_drop])
+
+    return [s for s in skills if s.lower() not in drop], removed
+
+
 def _dedupe_skills_for_pack(
     skills: list[str],
     scores: dict[str, SkillScore],
@@ -165,18 +207,12 @@ def _dedupe_skills_for_pack(
     job_description: str,
 ) -> list[str]:
     """Drop redundant pairs; keep the higher-priority label."""
-    lowers = {s.lower() for s in skills}
-    drop: set[str] = set()
-    if "tailwind css" in lowers and "tailwind" in lowers:
-        prefer_css = "tailwind css" in job_description.lower() or any(
-            k.lower() == "tailwind css" for k in jd_keywords
-        )
-        drop.add("tailwind" if prefer_css else "tailwind css")
-    if "tensorflow.js" in lowers and "tensorflow" in lowers:
-        drop.add("tensorflow")
-    if "git" in lowers and "github" in lowers:
-        drop.add("github")
-    return [s for s in skills if s.lower() not in drop]
+    deduped, _ = dedupe_redundant_skills(
+        skills,
+        jd_keywords=jd_keywords,
+        job_description=job_description,
+    )
+    return deduped
 
 
 def build_packed_skill_lines(

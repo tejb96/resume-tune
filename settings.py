@@ -87,4 +87,5 @@ def load_settings() -> dict:
             config.get("max_chars_per_skill_line", DEFAULT_MAX_CHARS_PER_SKILL_LINE)
         ),
         "max_certifications": int(config.get("max_certifications", 1)),
+        "tracker_file": str(config.get("tracker_file", "./output/applications.xlsx")),
     }

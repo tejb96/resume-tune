@@ -8,7 +8,7 @@ from unittest.mock import patch
 import pytest
 
 from ai import AIResponseError
-from resume import _prevent_orphan_word, build_resume, fit_resume_to_page_budget, load_background
+from resume import build_resume, fit_resume_to_page_budget, load_background
 from selection import (
     apply_content_selection,
     build_ratings_system_prompt,
@@ -206,14 +206,6 @@ def test_trim_selection_one_step_drops_experience_when_no_projects() -> None:
     }
     trimmed = trim_selection_one_step(selection)
     assert trimmed["experience_selections"][0]["bullet_indices"] == [0]
-
-
-def test_prevent_orphan_word_joins_last_two_words() -> None:
-    result = _prevent_orphan_word(
-        "Resolved 100+ high-priority HubSpot support tickets, keeping stakeholders informed throughout"
-    )
-    assert "\u00a0" in result
-    assert result.endswith("informed\u00a0throughout")
 
 
 def test_fit_resume_trims_static_when_ai_exhausted() -> None:

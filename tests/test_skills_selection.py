@@ -7,6 +7,7 @@ from pathlib import Path
 from ai import apply_skills_guardrails
 from skills_selection import (
     SkillTier,
+    dedupe_redundant_skills,
     flatten_static_evidence_text,
     score_skills_for_job,
     select_relevant_skill_categories,
@@ -38,6 +39,35 @@ BACKEND_BACKGROUND = {
         }
     ],
 }
+
+
+def test_dedupe_redundant_skills_aws_saa() -> None:
+    skills, removed = dedupe_redundant_skills(["AWS", "AWS SAA", "Docker"])
+    assert skills == ["AWS", "Docker"]
+    assert removed == ["AWS SAA"]
+
+
+def test_dedupe_redundant_skills_tensorflow_prefers_js() -> None:
+    skills, removed = dedupe_redundant_skills(["TensorFlow.js", "TensorFlow", "Python"])
+    assert skills == ["TensorFlow.js", "Python"]
+    assert removed == ["TensorFlow"]
+
+
+def test_guardrails_dedupes_aws_saa() -> None:
+    categories = [{"name": "Cloud", "skills": ["AWS", "AWS SAA"]}]
+    guarded, info = apply_skills_guardrails(
+        categories,
+        {
+            "cloud_devops": ["AWS", "AWS SAA", "Docker"],
+            "languages": ["Python"],
+        },
+        "Need AWS and Docker experience.",
+        max_chars_per_line=88,
+    )
+    all_skills = [s for cat in guarded for s in cat["skills"]]
+    assert "AWS" in all_skills
+    assert "AWS SAA" not in all_skills
+    assert "AWS SAA" in info.get("deduped_skills", [])
 
 
 def test_flatten_static_evidence_text_includes_experience() -> None:

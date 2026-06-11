@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
 
 import streamlit as st
@@ -22,7 +23,7 @@ from ai import (
     revise_tailored_content,
 )
 from skills_map import load_skills_map
-from ats import analyze_ats_compatibility
+from ats import analyze_ats_compatibility, extract_jd_keywords
 from resume import (
     build_resume_artifacts,
     libreoffice_available,
@@ -40,6 +41,7 @@ from selection import (
     static_content_stats,
 )
 from settings import ROOT, load_settings
+from tracker import log_application
 
 
 @st.cache_data
@@ -450,7 +452,64 @@ def render_ats_section(
             )
 
 
-def render_save_section(result: dict, output_dir: Path) -> None:
+def _reset_application_log_prompt() -> None:
+    st.session_state.pending_application_log = None
+    st.session_state.application_log_submitted = None
+
+
+def _ats_keywords_prefill(result: dict) -> str:
+    ats = result.get("ats")
+    if ats:
+        return ", ".join(ats.get("jd_keywords") or [])
+    jd = (result.get("job_description") or "").strip()
+    if jd:
+        return ", ".join(extract_jd_keywords(jd))
+    return ""
+
+
+def render_application_log_prompt(result: dict, tracker_path: Path) -> None:
+    pending = st.session_state.get("pending_application_log")
+    if not pending:
+        return
+
+    log_key = f"{pending['review_nonce']}:{pending['resume_path']}"
+    if st.session_state.get("application_log_submitted") == log_key:
+        return
+
+    ats_keywords = _ats_keywords_prefill(result)
+    resume_path = pending["resume_path"]
+
+    with st.expander("Log this application", expanded=True):
+        with st.form("application_log_form"):
+            date_applied = st.date_input("Date Applied", value=date.today())
+            company = st.text_input("Company")
+            role = st.text_input("Role / Job Title")
+            location = st.text_input("Location")
+            status = st.text_input("Status", value="Applied")
+            st.text_input("ATS Keywords", value=ats_keywords, disabled=True)
+            st.text_input("Resume File", value=resume_path, disabled=True)
+            notes = st.text_area("Notes")
+
+            if st.form_submit_button("Log application"):
+                row = {
+                    "Date Applied": date_applied.isoformat(),
+                    "Company": company.strip(),
+                    "Role / Job Title": role.strip(),
+                    "Location": location.strip(),
+                    "Status": status.strip(),
+                    "ATS Keywords": ats_keywords,
+                    "Resume File": resume_path,
+                    "Notes": notes.strip(),
+                }
+                try:
+                    log_application(tracker_path, row)
+                    st.session_state.application_log_submitted = log_key
+                    st.success(f"Logged to `{tracker_path}`")
+                except OSError as exc:
+                    st.error(f"Could not log application: {exc}")
+
+
+def render_save_section(result: dict, output_dir: Path, tracker_path: Path) -> None:
     st.subheader("Save")
     save_col_docx, save_col_pdf = st.columns(2)
 
@@ -465,6 +524,11 @@ def render_save_section(result: dict, output_dir: Path) -> None:
                 try:
                     saved_path = save_resume_to_disk(docx_bytes, output_dir, filename_docx)
                     result["saved_paths"]["docx"] = str(saved_path)
+                    st.session_state.pending_application_log = {
+                        "resume_path": str(saved_path),
+                        "review_nonce": st.session_state.review_nonce,
+                    }
+                    st.session_state.application_log_submitted = None
                     st.success(f"Saved to `{saved_path}`")
                 except OSError as exc:
                     st.error(f"Could not save DOCX: {exc}")
@@ -487,6 +551,11 @@ def render_save_section(result: dict, output_dir: Path) -> None:
                 try:
                     saved_path = save_resume_to_disk(pdf_bytes, output_dir, filename_pdf)
                     result["saved_paths"]["pdf"] = str(saved_path)
+                    st.session_state.pending_application_log = {
+                        "resume_path": str(saved_path),
+                        "review_nonce": st.session_state.review_nonce,
+                    }
+                    st.session_state.application_log_submitted = None
                     st.success(f"Saved to `{saved_path}`")
                 except OSError as exc:
                     st.error(f"Could not save PDF: {exc}")
@@ -513,10 +582,13 @@ def render_save_section(result: dict, output_dir: Path) -> None:
                 "PDF export requires LibreOffice (`sudo apt install libreoffice-writer`)."
             )
 
+    render_application_log_prompt(result, tracker_path)
+
 
 config = load_config()
 background_path = (ROOT / config.get("background_file", "./background.md")).resolve()
 output_dir = (ROOT / config.get("output_dir", "./output")).resolve()
+tracker_path = (ROOT / config.get("tracker_file", "./output/applications.xlsx")).resolve()
 endpoint_url = config.get("endpoint_url", "")
 api_key = config.get("api_key", "ollama")
 default_model = config.get("model_name", "")
@@ -604,10 +676,15 @@ if "result" not in st.session_state:
     st.session_state.result = None
 if "review_nonce" not in st.session_state:
     st.session_state.review_nonce = 0
+if "pending_application_log" not in st.session_state:
+    st.session_state.pending_application_log = None
+if "application_log_submitted" not in st.session_state:
+    st.session_state.application_log_submitted = None
 
 if preview:
     with st.spinner("Building background preview..."):
         st.session_state.review_nonce += 1
+        _reset_application_log_prompt()
         st.session_state.result = build_background_preview(background_data)
 
 if generate:
@@ -672,6 +749,7 @@ if generate:
 
             with st.spinner("Building resume preview..."):
                 st.session_state.review_nonce += 1
+                _reset_application_log_prompt()
                 result = apply_artifacts_to_result(
                     {},
                     background_data,
@@ -802,6 +880,7 @@ else:
                                 )
                                 result["revision_history"] = history
                                 st.session_state.review_nonce += 1
+                                _reset_application_log_prompt()
                                 st.rerun()
                         except AIResponseError as exc:
                             st.error(str(exc))
@@ -890,6 +969,7 @@ else:
                                 **artifact_build_kwargs(result),
                             )
                             st.session_state.review_nonce += 1
+                            _reset_application_log_prompt()
                             st.rerun()
         elif result.get("preview_mode"):
             st.caption(
@@ -899,7 +979,7 @@ else:
         else:
             st.caption("No AI sections configured. Edit background.md or config.toml to enable revision.")
 
-        render_save_section(result, output_dir)
+        render_save_section(result, output_dir, tracker_path)
         preview_sections = result.get("sections") or resume_sections
         preview_include_summary = "summary" in preview_sections
         preview_include_skills = "skills" in preview_sections

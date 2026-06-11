@@ -184,16 +184,30 @@ def normalize_ai_output(
     return {"summary": summary, "skill_categories": categories}
 
 
+def _coerce_skill_category(cat: Any) -> dict[str, Any]:
+    if isinstance(cat, dict):
+        return cat
+    if isinstance(cat, list):
+        if not cat or not all(isinstance(s, str) for s in cat):
+            raise ValueError("skill_categories entry must be a mapping or string list")
+        if cat[0] == "":
+            return {"name": "", "skills": [s.strip() for s in cat[1:] if s.strip()]}
+        return {"name": "", "skills": [s.strip() for s in cat if s.strip()]}
+    raise ValueError("skill_categories entry must be a mapping")
+
+
 def _validate_skill_categories(categories: Any) -> list[dict[str, Any]]:
     if not isinstance(categories, list) or not categories:
         raise ValueError("'skill_categories' must be a non-empty list")
 
     validated: list[dict[str, Any]] = []
     for i, cat in enumerate(categories):
-        if not isinstance(cat, dict):
-            raise ValueError(f"skill_categories[{i}] must be a mapping")
-        name = cat.get("name", "")
-        skills = cat.get("skills", [])
+        try:
+            coerced = _coerce_skill_category(cat)
+        except ValueError as exc:
+            raise ValueError(f"skill_categories[{i}] {exc}") from exc
+        name = coerced.get("name", "")
+        skills = coerced.get("skills", [])
         if not isinstance(name, str):
             raise ValueError(f"skill_categories[{i}].name must be a string (may be empty)")
         if not isinstance(skills, list) or not skills:
@@ -416,24 +430,28 @@ def skill_line_utilization(
 
 def dedupe_skill_redundancies(
     skill_categories: list[dict[str, Any]],
+    *,
+    job_description: str = "",
+    jd_keywords: list[str] | None = None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """Remove redundant skill pairs within each line."""
+    from skills_selection import dedupe_redundant_skills
+
+    if jd_keywords is None and job_description.strip():
+        from ats import extract_jd_keywords
+
+        jd_keywords = extract_jd_keywords(job_description)
+    keywords = jd_keywords or []
+
     deduped: list[str] = []
     result: list[dict[str, Any]] = []
     for cat in skill_categories:
-        skills = list(cat["skills"])
-        lowers = {s.lower() for s in skills}
-
-        if "tensorflow.js" in lowers and "tensorflow" in lowers:
-            skills = [s for s in skills if s.lower() != "tensorflow"]
-            deduped.append("TensorFlow")
-        if "tailwind css" in lowers and "tailwind" in lowers:
-            skills = [s for s in skills if s.lower() != "tailwind"]
-            deduped.append("Tailwind")
-        if "git" in lowers and "github" in lowers:
-            skills = [s for s in skills if s.lower() != "github"]
-            deduped.append("GitHub")
-
+        skills, removed = dedupe_redundant_skills(
+            list(cat["skills"]),
+            jd_keywords=keywords,
+            job_description=job_description,
+        )
+        deduped.extend(removed)
         if skills:
             result.append({"name": cat["name"], "skills": skills})
     return result, deduped
@@ -493,7 +511,7 @@ def apply_skills_guardrails(
     filtered, removed = filter_skill_categories(categories, skills_map)
     categories = filtered
 
-    categories, deduped = dedupe_skill_redundancies(categories)
+    categories, deduped = dedupe_skill_redundancies(categories, job_description=job_description)
 
     packed, selection_info = select_relevant_skill_categories(
         categories,

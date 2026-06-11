@@ -75,6 +75,13 @@ def test_dedupe_tensorflow_and_git() -> None:
     assert "GitHub" in removed
 
 
+def test_dedupe_aws_saa_when_aws_present() -> None:
+    categories = [{"name": "Cloud", "skills": ["AWS", "AWS SAA", "Docker"]}]
+    deduped_cats, removed = dedupe_skill_redundancies(categories)
+    assert deduped_cats[0]["skills"] == ["AWS", "Docker"]
+    assert "AWS SAA" in removed
+
+
 def test_apply_skills_guardrails_same_bucket_topup() -> None:
     categories = [{"name": "Languages", "skills": ["Python"]}]
     jd = "Looking for Python and JavaScript experience."
