@@ -1,5 +1,8 @@
 # Resume Tune
 
+![views](https://raw.githubusercontent.com/tejb96/resume-tune/traffic-data/views-badge.svg)
+![clones](https://raw.githubusercontent.com/tejb96/resume-tune/traffic-data/clones-badge.svg)
+
 Local desktop-style resume generator: paste a job description, tailor summary and skills with a local OpenAI-compatible LLM (Lemonade, Ollama, etc.), preview the full resume, revise via chat, and save as DOCX or PDF.
 
 ## Requirements
