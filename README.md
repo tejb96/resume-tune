@@ -17,7 +17,30 @@ cp .env.example .env
 cp background.example.md background.md
 ```
 
-Edit `.env` with your API endpoint, key, and model. For Lemonade, check your port with `lemonade status` and use `http://localhost:<port>/api/v1`. Edit `background.md` with your resume data (YAML frontmatter + career context body). `background.example.md` is the public template; `background.md` is your private copy and is gitignored.
+Edit `.env` with your API endpoint, key, and model. For Lemonade, check your port with `lemonade status` and use `http://localhost:<port>/api/v1`. Copy and edit `background.md` from `background.example.md` (see [Background file](#background-file) below). `background.md` is your private copy and is gitignored.
+
+## Background file
+
+`background.md` has two parts separated by `---`:
+
+1. **YAML frontmatter** — resume data rendered in the DOCX/PDF:
+   - `header` (name, title, contact, links)
+   - `experience`, `education`, `projects`, `certifications` (lists with bullets)
+   - `skills_map` — bucket → skill lists (required when `"skills"` is in `resume_sections`). The LLM may only output skills from this map; anything else is dropped.
+
+```yaml
+skills_map:
+  languages:
+    - Python
+    - Go
+  infrastructure:
+    - AWS
+    - Kubernetes
+```
+
+2. **Markdown body** — career context for the LLM only (not rendered in the export).
+
+If `skills_map` is omitted, the app falls back to `## Core strengths` bullets in the body. See [background.example.md](background.example.md) for the full template.
 
 ## Run
 
@@ -48,6 +71,12 @@ uv run python scripts/smoke_test.py --background background.md --static-only
 
 Advanced manual editing is available in a collapsed expander if you want to tweak summary or skills directly.
 
+## ATS check and application tracker
+
+- **ATS check** — After generating a resume, paste a job description and click **Run ATS check** in the sidebar (when `enable_ats_compat = true` in `config.toml`, the default). Reports keyword match, section presence, and contact-field parse checks. No LLM required.
+- CLI equivalent: `uv run python scripts/ats_check.py --jd-file path/to/jd.txt --background background.md`
+- **Application tracker** — After saving DOCX or PDF, an optional form logs company, role, ATS keywords, and resume filename to `tracker_file` (default `./output/applications.xlsx`).
+
 ## Docker (app only)
 
 Runs Streamlit only; point it at an LLM server on the host (or elsewhere) via `.env`:
@@ -71,17 +100,17 @@ docker compose up --build
 | `OPENAI_BASE_URL` | OpenAI-compatible API base URL (required) |
 | `OPENAI_API_KEY` | API key (`lemonade` for Lemonade; `ollama` for Ollama) |
 | `OPENAI_MODEL` | Model name to use |
-| `AI_OUTPUT_MAX_CHARS` | Max combined characters for tailored summary + skill labels (default `967`) |
+| `AI_OUTPUT_MAX_CHARS` | Max combined characters for tailored summary + skill labels (default `600` in `config.toml`) |
 
-`config.toml` supplies paths, model presets, and `ai_output_max_chars` when env vars are not set.
+`.env` overrides `config.toml`, which supplies paths, model presets, and `ai_output_max_chars` when env vars are not set.
 
 ### Resume section layout
 
 `resume_sections` in `config.toml` controls which sections appear in the exported DOCX/PDF and their order (the header is always first). Valid section ids: `summary`, `skills`, `experience`, `education`, `projects`, `certifications`.
 
 ```toml
+# Example — omit or reorder entries as needed (summary is optional)
 resume_sections = [
-    "summary",
     "skills",
     "experience",
     "education",
@@ -90,7 +119,7 @@ resume_sections = [
 ]
 ```
 
-- Omit a section to exclude it (e.g. remove `"summary"` to drop the professional summary).
+- Omit a section to exclude it (e.g. omit `"summary"` to drop the professional summary).
 - Reorder entries to rearrange sections (e.g. put `"certifications"` before `"education"`).
 
 Omitting `summary` and/or `skills` also skips LLM generation for those fields. The character budget (`ai_output_max_chars`) applies only to included AI sections. If both are omitted, the app builds the resume from `background.md` only — no job description or LLM endpoint required.
@@ -135,9 +164,20 @@ uv run pytest                                # unit tests (optional: uv sync --e
 |------|------|
 | `app.py` | Streamlit UI (preview, chat revision, save) |
 | `ai.py` | Local LLM call, JSON parse/validate, revision |
+| `ats.py` | Deterministic ATS keyword and parse checks |
 | `selection.py` | Job-aware experience/project bullet selection by index |
+| `scoring.py` | Composite scoring and page-fit trimming |
+| `skills_map.py` | `skills_map` loading and LLM guardrails |
+| `skills_selection.py` | Job-relevant skills packing from `skills_map` |
+| `tracker.py` | Application log spreadsheet (`applications.xlsx`) |
 | `settings.py` | `.env` + `config.toml` loader |
 | `resume.py` | python-docx formatter, HTML/PDF export |
 | `background.example.md` | Public resume template (frontmatter + AI context) |
 | `background.md` | Your private background (gitignored; copy from example) |
 | `config.toml` | Paths and model presets |
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for dev setup.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
