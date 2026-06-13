@@ -113,12 +113,16 @@ with st.form("settings_form"):
         )
 
     with st.expander("Paths (config.local.toml)"):
-        output_dir = st.text_input("Output directory", value=str(config.get("output_dir", "./output")))
+        output_dir = st.text_input(
+            "Applications directory",
+            value=str(config.get("output_dir", "./Applications")),
+        )
         background_file = st.text_input(
             "Background file", value=str(config.get("background_file", "./background.md"))
         )
         tracker_file = st.text_input(
-            "Tracker file", value=str(config.get("tracker_file", "./output/applications.xlsx"))
+            "Tracker file",
+            value=str(config.get("tracker_file", "./Applications/applications.xlsx")),
         )
 
     save = st.form_submit_button("Save settings", type="primary")

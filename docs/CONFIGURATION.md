@@ -37,9 +37,9 @@ Legacy alias: `OPENAI_API_BASE` is accepted instead of `OPENAI_BASE_URL`.
 | `endpoint_url` | string | `""` | LLM base URL when `OPENAI_BASE_URL` unset |
 | `api_key` | string | `"lemonade"` | API key when `OPENAI_API_KEY` unset |
 | `model_name` | string | `"llama3.1:8b-FLM"` | Model when `OPENAI_MODEL` unset |
-| `output_dir` | string | `"./output"` | Where saved DOCX/PDF files go |
+| `output_dir` | string | `"./Applications"` | Root folder for saved resumes and per-application subfolders |
 | `background_file` | string | `"./background.md"` | Path to your resume data |
-| `tracker_file` | string | `"./output/applications.xlsx"` | Application log spreadsheet |
+| `tracker_file` | string | `"./Applications/applications.xlsx"` | Application log spreadsheet |
 | `ai_output_max_chars` | int | `600` | Character budget for AI summary + skills |
 | `max_resume_pages` | int | `1` | Target page count (requires LibreOffice for PDF trial render) |
 | `auto_fill_page_budget` | bool | `true` | Greedily add highest-scored omitted bullets to fill pages |

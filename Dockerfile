@@ -7,6 +7,7 @@ RUN uv sync --frozen --no-dev
 
 COPY src/ ./src/
 COPY pages/ ./pages/
+COPY .streamlit/config.toml ./.streamlit/config.toml
 COPY Tailor_Resume.py config.toml background.example.md ./
 RUN cp background.example.md background.md
 

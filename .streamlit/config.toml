@@ -1,0 +1,3 @@
+[client]
+# Hide Deploy, Rerun, and Clear cache on localhost (viewer options remain).
+toolbarMode = "viewer"

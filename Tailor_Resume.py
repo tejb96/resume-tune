@@ -41,6 +41,7 @@ from resume_tune.llm.selection import (
     static_content_stats,
 )
 from resume_tune.settings import ROOT
+from resume_tune.tracker.paths import organize_application_files
 from resume_tune.tracker.tracker import log_application
 from resume_tune.ui.common import example_background_path, load_config, model_options, resolve_paths
 
@@ -462,7 +463,16 @@ def _ats_keywords_prefill(result: dict) -> str:
     return ""
 
 
-def render_application_log_prompt(result: dict, tracker_path: Path) -> None:
+def _ats_score_prefill(result: dict) -> str:
+    ats = result.get("ats")
+    if ats and ats.get("keyword_match_pct") is not None:
+        return str(ats["keyword_match_pct"])
+    return ""
+
+
+def render_application_log_prompt(
+    result: dict, applications_dir: Path, tracker_path: Path
+) -> None:
     pending = st.session_state.get("pending_application_log")
     if not pending:
         return
@@ -472,7 +482,9 @@ def render_application_log_prompt(result: dict, tracker_path: Path) -> None:
         return
 
     ats_keywords = _ats_keywords_prefill(result)
+    ats_score = _ats_score_prefill(result)
     resume_path = pending["resume_path"]
+    job_description = (result.get("job_description") or "").strip()
 
     with st.expander("Log this application", expanded=True):
         with st.form("application_log_form"):
@@ -481,19 +493,53 @@ def render_application_log_prompt(result: dict, tracker_path: Path) -> None:
             role = st.text_input("Role / Job Title")
             location = st.text_input("Location")
             status = st.text_input("Status", value="Applied")
+            job_url = st.text_input("Job URL")
+            st.text_input("ATS Score at Apply", value=ats_score, disabled=True)
+            set_follow_up = st.checkbox("Set follow-up date")
+            follow_up_date = st.date_input(
+                "Follow-up Date",
+                value=date.today(),
+                disabled=not set_follow_up,
+            )
             st.text_input("ATS Keywords", value=ats_keywords, disabled=True)
             st.text_input("Resume File", value=resume_path, disabled=True)
+            st.caption(
+                f"On log, resume and JD snapshot move to "
+                f"`{applications_dir}/{{date}}_{{company}}_{{role}}/`."
+            )
+            if not job_description:
+                st.caption("No job description in this session — JD snapshot will be left empty.")
             notes = st.text_area("Notes")
 
             if st.form_submit_button("Log application"):
+                company_value = company.strip()
+                role_value = role.strip()
+                date_value = date_applied.isoformat()
+                try:
+                    organized_resume, organized_jd = organize_application_files(
+                        applications_dir,
+                        resume_path=Path(resume_path),
+                        company=company_value,
+                        role=role_value,
+                        date_applied=date_value,
+                        job_description=job_description,
+                    )
+                except OSError as exc:
+                    st.error(f"Could not organize application files: {exc}")
+                    return
+
                 row = {
-                    "Date Applied": date_applied.isoformat(),
-                    "Company": company.strip(),
-                    "Role / Job Title": role.strip(),
+                    "Date Applied": date_value,
+                    "Company": company_value,
+                    "Role / Job Title": role_value,
                     "Location": location.strip(),
                     "Status": status.strip(),
+                    "Job URL": job_url.strip(),
+                    "ATS Score at Apply": ats_score,
+                    "Follow-up Date": follow_up_date.isoformat() if set_follow_up else "",
                     "ATS Keywords": ats_keywords,
-                    "Resume File": resume_path,
+                    "Resume File": str(organized_resume),
+                    "JD Snapshot": str(organized_jd) if organized_jd else "",
                     "Notes": notes.strip(),
                 }
                 try:
@@ -504,7 +550,7 @@ def render_application_log_prompt(result: dict, tracker_path: Path) -> None:
                     st.error(f"Could not log application: {exc}")
 
 
-def render_save_section(result: dict, output_dir: Path, tracker_path: Path) -> None:
+def render_save_section(result: dict, applications_dir: Path, tracker_path: Path) -> None:
     st.subheader("Save")
     save_col_docx, save_col_pdf = st.columns(2)
 
@@ -517,7 +563,7 @@ def render_save_section(result: dict, output_dir: Path, tracker_path: Path) -> N
         if docx_bytes:
             if st.button("Save DOCX to disk", key="save_docx_disk", use_container_width=True):
                 try:
-                    saved_path = save_resume_to_disk(docx_bytes, output_dir, filename_docx)
+                    saved_path = save_resume_to_disk(docx_bytes, applications_dir, filename_docx)
                     result["saved_paths"]["docx"] = str(saved_path)
                     st.session_state.pending_application_log = {
                         "resume_path": str(saved_path),
@@ -544,7 +590,7 @@ def render_save_section(result: dict, output_dir: Path, tracker_path: Path) -> N
         if pdf_bytes:
             if st.button("Save PDF to disk", key="save_pdf_disk", use_container_width=True):
                 try:
-                    saved_path = save_resume_to_disk(pdf_bytes, output_dir, filename_pdf)
+                    saved_path = save_resume_to_disk(pdf_bytes, applications_dir, filename_pdf)
                     result["saved_paths"]["pdf"] = str(saved_path)
                     st.session_state.pending_application_log = {
                         "resume_path": str(saved_path),
@@ -577,11 +623,11 @@ def render_save_section(result: dict, output_dir: Path, tracker_path: Path) -> N
                 "PDF export requires LibreOffice (`sudo apt install libreoffice-writer`)."
             )
 
-    render_application_log_prompt(result, tracker_path)
+    render_application_log_prompt(result, applications_dir, tracker_path)
 
 
 config = load_config()
-background_path, output_dir, tracker_path = resolve_paths(config)
+background_path, applications_dir, tracker_path = resolve_paths(config)
 endpoint_url = config.get("endpoint_url", "")
 api_key = config.get("api_key", "ollama")
 default_model = config.get("model_name", "")
@@ -989,7 +1035,7 @@ else:
         else:
             st.caption("No AI sections configured. Edit background.md or config.toml to enable revision.")
 
-        render_save_section(result, output_dir, tracker_path)
+        render_save_section(result, applications_dir, tracker_path)
         preview_sections = result.get("sections") or resume_sections
         preview_include_summary = "summary" in preview_sections
         preview_include_skills = "skills" in preview_sections

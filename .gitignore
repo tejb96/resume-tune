@@ -2,7 +2,8 @@
 .env
 background.md
 config.local.toml
-output/
+Applications/
 __pycache__/
 *.pyc
-.streamlit/
+.streamlit/*
+!.streamlit/config.toml

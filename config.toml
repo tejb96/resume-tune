@@ -2,9 +2,9 @@
 endpoint_url = ""
 api_key = "lemonade"
 model_name = "llama3.1:8b-FLM"
-output_dir = "./output"
+output_dir = "./Applications"
 background_file = "./background.md"
-tracker_file = "./output/applications.xlsx"
+tracker_file = "./Applications/applications.xlsx"
 # Secondary ceiling for AI summary + skill labels (primary limits below).
 ai_output_max_chars = 600
 # Target page count for rendered PDF (requires LibreOffice).

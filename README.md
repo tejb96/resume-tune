@@ -30,7 +30,7 @@ uv run streamlit run Tailor_Resume.py
 
 ## Workflow
 
-Use the sidebar to switch between **Tailor resume**, **Resume data**, and **Settings**.
+Use the sidebar to switch between **Tailor resume**, **Resume data**, **Applications**, and **Settings**.
 
 ### Background preview (no API)
 
@@ -47,14 +47,15 @@ uv run python scripts/smoke_test.py --background background.md --static-only
 1. Paste a job description and click **Generate tailored content**.
 2. DOCX builds immediately; HTML preview appears on the right.
 3. Use chat to revise (e.g. *"Shorten the skills list"*).
-4. **Download DOCX** or **Download PDF** (LibreOffice required). Files can save to `./output`.
+4. **Download DOCX** or **Download PDF** (LibreOffice required). Files save to `./Applications` until logged.
 
 Manual summary/skills editing is available in a collapsed expander.
 
 ### ATS check and tracker
 
 - **ATS check** — After generating, run **Run ATS check** in the sidebar. See [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
-- **Application tracker** — Optional form logs applications to `./output/applications.xlsx`.
+- **Application tracker** — Optional form logs applications to `./Applications/applications.xlsx`. Each application gets a folder like `./Applications/2026-06-12_Acme_Corp_Software_Engineer/` containing `resume.docx`/`resume.pdf` and `job_description.txt`.
+- **Applications** — View, filter, edit logged applications and download linked resumes or JD snapshots from the **Applications** sidebar page.
 
 CLI: `uv run python scripts/ats_check.py --jd-file path/to/jd.txt --background background.md`
 
@@ -96,7 +97,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) and [docs/DEVELOPMENT.md](docs/DEVELOPMEN
 
 ```
 Tailor_Resume.py       Streamlit entry (Tailor resume)
-pages/                 Resume data and Settings pages
+pages/                 Resume data, Applications, and Settings pages
 config.toml            Settings
 background.example.md  Resume template
 src/resume_tune/       Python package (llm, render, skills, ats, …)

@@ -142,7 +142,7 @@ def load_settings() -> dict:
         ),
         "max_certifications": int(config.get("max_certifications", 1)),
         "max_completion_tokens": _optional_int(config.get("max_completion_tokens")),
-        "tracker_file": str(config.get("tracker_file", "./output/applications.xlsx")),
+        "tracker_file": str(config.get("tracker_file", "./Applications/applications.xlsx")),
     }
 
 

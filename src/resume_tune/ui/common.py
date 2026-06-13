@@ -28,8 +28,8 @@ def model_options(config: dict) -> list[str]:
 
 def resolve_paths(config: dict) -> tuple[Path, Path, Path]:
     background_path = (ROOT / config.get("background_file", "./background.md")).resolve()
-    output_dir = (ROOT / config.get("output_dir", "./output")).resolve()
-    tracker_path = (ROOT / config.get("tracker_file", "./output/applications.xlsx")).resolve()
+    output_dir = (ROOT / config.get("output_dir", "./Applications")).resolve()
+    tracker_path = (ROOT / config.get("tracker_file", "./Applications/applications.xlsx")).resolve()
     return background_path, output_dir, tracker_path
 
 
