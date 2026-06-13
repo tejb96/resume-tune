@@ -6,7 +6,7 @@ import re
 from dataclasses import asdict, dataclass
 from typing import Any, Literal
 
-from resume import (
+from resume_tune.render.resume import (
     ai_section_flags,
     extract_pdf_text,
     flatten_resume_text,

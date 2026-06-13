@@ -6,19 +6,19 @@ import os
 import tomllib
 from pathlib import Path
 
-from ai import (
+from resume_tune.llm.ai import (
     DEFAULT_AI_OUTPUT_MAX_CHARS,
     DEFAULT_MAX_CHARS_PER_SKILL_LINE,
     DEFAULT_MAX_SKILL_CATEGORIES,
     DEFAULT_MAX_SKILLS_PER_CATEGORY,
 )
-from resume import resolve_resume_sections
-from selection import (
+from resume_tune.llm.selection import (
     DEFAULT_MIN_PROJECT_BULLETS,
     DEFAULT_MIN_PROJECT_ENTRIES,
 )
+from resume_tune.render.resume import resolve_resume_sections
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent.parent
 CONFIG_PATH = ROOT / "config.toml"
 
 

@@ -10,7 +10,7 @@ from typing import Any
 
 from openai import APIConnectionError, APIStatusError, OpenAI
 
-# Reference fit that keeps AI summary + skills on page 2 of the DOCX template.
+# Code fallback when config.toml and .env omit ai_output_max_chars (reference two-page template fit).
 DEFAULT_AI_OUTPUT_MAX_CHARS = 967
 DEFAULT_MAX_SKILL_CATEGORIES = 4
 DEFAULT_MAX_SKILLS_PER_CATEGORY = 5
@@ -546,10 +546,10 @@ def dedupe_skill_redundancies(
     jd_keywords: list[str] | None = None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """Remove redundant skill pairs within each line."""
-    from skills_selection import dedupe_redundant_skills
+    from resume_tune.skills.skills_selection import dedupe_redundant_skills
 
     if jd_keywords is None and job_description.strip():
-        from ats import extract_jd_keywords
+        from resume_tune.ats.ats import extract_jd_keywords
 
         jd_keywords = extract_jd_keywords(job_description)
     keywords = jd_keywords or []
@@ -569,7 +569,7 @@ def dedupe_skill_redundancies(
 
 
 def _buckets_on_line(skills: list[str], skills_map: dict[str, list[str]]) -> set[str]:
-    from skills_map import buckets_for_skill
+    from resume_tune.skills.skills_map import buckets_for_skill
 
     buckets: set[str] = set()
     for skill in skills:
@@ -614,7 +614,7 @@ def apply_skills_guardrails(
 
     Returns (final categories, diagnostics).
     """
-    from skills_selection import select_relevant_skill_categories
+    from resume_tune.skills.skills_selection import select_relevant_skill_categories
 
     categories = [
         {"name": cat["name"], "skills": list(cat["skills"])} for cat in skill_categories
@@ -657,7 +657,7 @@ def pack_skill_lines(
     skills_map: dict[str, list[str]] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Backward-compatible alias; prefers skills_map over background_text scan."""
-    from skills_map import load_skills_map, parse_core_strengths_markdown
+    from resume_tune.skills.skills_map import load_skills_map, parse_core_strengths_markdown
 
     resolved_map = skills_map or {}
     if not resolved_map and background_text:
@@ -718,7 +718,7 @@ def build_evidence_text(
     content_selection: dict[str, Any] | None = None,
 ) -> str:
     """Combine static resume YAML and narrative text for skills evidence."""
-    from skills_selection import extract_narrative_text, flatten_static_evidence_text
+    from resume_tune.skills.skills_selection import extract_narrative_text, flatten_static_evidence_text
 
     narrative = extract_narrative_text(background_text)
     if background_data is None:
@@ -736,7 +736,7 @@ def build_skill_hints_for_prompt(
     evidence_text: str,
 ) -> str:
     """Build deterministic skill hint block for the LLM system prompt."""
-    from skills_selection import format_skill_hints_for_prompt, score_skills_for_job
+    from resume_tune.skills.skills_selection import format_skill_hints_for_prompt, score_skills_for_job
 
     if not skills_map or not job_description.strip():
         return ""
@@ -758,7 +758,7 @@ def build_system_prompt(
     job_description: str = "",
     evidence_text: str = "",
 ) -> str:
-    from skills_map import format_skills_map_for_prompt
+    from resume_tune.skills.skills_map import format_skills_map_for_prompt
 
     skills_layout_rules = _format_skills_layout_rules(
         max_skill_categories=max_skill_categories,
@@ -812,7 +812,7 @@ def build_revision_system_prompt(
     job_description: str = "",
     evidence_text: str = "",
 ) -> str:
-    from skills_map import format_skills_map_for_prompt
+    from resume_tune.skills.skills_map import format_skills_map_for_prompt
 
     skills_layout_rules = _format_skills_layout_rules(
         max_skill_categories=max_skill_categories,
@@ -1089,7 +1089,7 @@ def filter_skill_categories(
     skills_map: dict[str, list[str]],
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """Drop skills not in skills_map; return filtered categories and dropped skills."""
-    from skills_map import canonical_skill_label
+    from resume_tune.skills.skills_map import canonical_skill_label
 
     dropped: list[str] = []
     filtered: list[dict[str, Any]] = []
@@ -1120,7 +1120,7 @@ def check_skills_against_background(
     background_text: str,
 ) -> list[str]:
     """Return skills not in skills_map (parses Core strengths fallback from body)."""
-    from skills_map import parse_core_strengths_markdown
+    from resume_tune.skills.skills_map import parse_core_strengths_markdown
 
     skills_map = parse_core_strengths_markdown(background_text)
     return check_skills_against_map(skill_categories, skills_map)
@@ -1182,7 +1182,7 @@ def _build_user_message_with_jd_hints(
     include_skills: bool,
 ) -> str:
     """User message for generation; optional JD keyword hints for skills packing."""
-    from ats import extract_jd_keywords
+    from resume_tune.ats.ats import extract_jd_keywords
 
     jd = job_description.strip()
     if not jd or not include_skills:
@@ -1433,7 +1433,7 @@ def generate_tailored_content(
     if ai_output_max_chars < 1:
         raise ValueError("ai_output_max_chars must be positive")
 
-    from skills_map import load_skills_map
+    from resume_tune.skills.skills_map import load_skills_map
 
     background_text = read_background_text(background_path)
     skills_map = load_skills_map(background_path)
@@ -1544,7 +1544,7 @@ def revise_tailored_content(
     if include_skills and not skill_categories:
         raise ValueError("Current skills cannot be empty")
 
-    from skills_map import load_skills_map
+    from resume_tune.skills.skills_map import load_skills_map
 
     background_text = read_background_text(background_path)
     skills_map = load_skills_map(background_path)

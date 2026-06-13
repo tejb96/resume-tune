@@ -10,7 +10,7 @@ from zipfile import ZipFile
 
 import pytest
 
-from resume import (
+from resume_tune.render.resume import (
     BULLET_TEXT_INDENT,
     build_resume,
     build_resume_artifacts,
@@ -113,7 +113,7 @@ def test_docx_to_pdf_returns_none_without_libreoffice(
 ) -> None:
     docx_bytes = build_resume(sample_background, sample_ai_output)
 
-    with patch("resume.libreoffice_available", return_value=False):
+    with patch("resume_tune.render.resume.libreoffice_available", return_value=False):
         assert docx_to_pdf(docx_bytes) is None
 
 

@@ -4,13 +4,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ai import (
+from resume_tune.llm.ai import (
     apply_skills_guardrails,
     dedupe_skill_redundancies,
     filter_skill_categories,
 )
-from resume import build_resume, flatten_resume_text, load_background
-from skills_map import load_skills_map, parse_core_strengths_markdown
+from resume_tune.render.resume import build_resume, flatten_resume_text, load_background
+from resume_tune.skills.skills_map import load_skills_map, parse_core_strengths_markdown
 
 ROOT = Path(__file__).resolve().parent.parent
 

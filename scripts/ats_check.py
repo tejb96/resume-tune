@@ -8,12 +8,10 @@ import json
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
-
-from ai import EMPTY_AI_OUTPUT
-from ats import analyze_ats_compatibility
-from resume import build_resume, docx_to_pdf, load_background
+from resume_tune.llm.ai import EMPTY_AI_OUTPUT
+from resume_tune.ats.ats import analyze_ats_compatibility
+from resume_tune.render.resume import build_resume, docx_to_pdf, load_background
+from resume_tune.settings import ROOT
 
 
 def main() -> int:

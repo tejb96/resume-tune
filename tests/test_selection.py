@@ -7,9 +7,9 @@ from unittest.mock import patch
 
 import pytest
 
-from ai import AIResponseError
-from resume import build_resume, fit_resume_to_page_budget, load_background
-from selection import (
+from resume_tune.llm.ai import AIResponseError
+from resume_tune.render.resume import build_resume, fit_resume_to_page_budget, load_background
+from resume_tune.llm.selection import (
     apply_content_selection,
     build_ratings_system_prompt,
     default_selection,
@@ -19,7 +19,7 @@ from selection import (
     selection_policy_for_background,
     trim_selection_one_step,
 )
-from scoring import SelectionPolicy, build_selection_from_scores
+from resume_tune.content.scoring import SelectionPolicy, build_selection_from_scores
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -235,8 +235,8 @@ def test_fit_resume_trims_static_when_ai_exhausted() -> None:
         call_count["n"] += 1
         return 2 if call_count["n"] == 1 else 1
 
-    with patch("resume.docx_to_pdf", return_value=b"%PDF-fake"):
-        with patch("resume.pdf_page_count", side_effect=fake_page_count):
+    with patch("resume_tune.render.resume.docx_to_pdf", return_value=b"%PDF-fake"):
+        with patch("resume_tune.render.resume.pdf_page_count", side_effect=fake_page_count):
             fitted_ai, fitted_selection, _docx, _pdf, page_count, diagnostics = (
                 fit_resume_to_page_budget(
                     heavy_background,
@@ -280,8 +280,8 @@ def test_fit_resume_keeps_minimum_project_bullet() -> None:
         call_count["n"] += 1
         return 2 if call_count["n"] <= 6 else 1
 
-    with patch("resume.docx_to_pdf", return_value=b"%PDF-fake"):
-        with patch("resume.pdf_page_count", side_effect=fake_page_count):
+    with patch("resume_tune.render.resume.docx_to_pdf", return_value=b"%PDF-fake"):
+        with patch("resume_tune.render.resume.pdf_page_count", side_effect=fake_page_count):
             _fitted_ai, fitted_selection, _docx, _pdf, page_count, diagnostics = (
                 fit_resume_to_page_budget(
                     heavy_background,
@@ -334,8 +334,8 @@ def test_fit_resume_trims_lowest_composite_not_position() -> None:
         call_count["n"] += 1
         return 2 if call_count["n"] == 1 else 1
 
-    with patch("resume.docx_to_pdf", return_value=b"%PDF-fake"):
-        with patch("resume.pdf_page_count", side_effect=fake_page_count):
+    with patch("resume_tune.render.resume.docx_to_pdf", return_value=b"%PDF-fake"):
+        with patch("resume_tune.render.resume.pdf_page_count", side_effect=fake_page_count):
             _ai, fitted_selection, _docx, _pdf, page_count, diagnostics = (
                 fit_resume_to_page_budget(
                     background,
@@ -391,8 +391,8 @@ def test_fit_resume_expands_until_page_overflow() -> None:
         # Initial + first expand fits; second expand would overflow
         return 1 if call_count["n"] <= 2 else 2
 
-    with patch("resume.docx_to_pdf", return_value=b"%PDF-fake"):
-        with patch("resume.pdf_page_count", side_effect=fake_page_count):
+    with patch("resume_tune.render.resume.docx_to_pdf", return_value=b"%PDF-fake"):
+        with patch("resume_tune.render.resume.pdf_page_count", side_effect=fake_page_count):
             _ai, fitted_selection, _docx, _pdf, page_count, diagnostics = (
                 fit_resume_to_page_budget(
                     background,
@@ -410,7 +410,7 @@ def test_fit_resume_expands_until_page_overflow() -> None:
 
 
 def test_fit_resume_overflow_warning_when_strong_content_remains() -> None:
-    from resume import _page_fit_diagnostics
+    from resume_tune.render.resume import _page_fit_diagnostics
 
     background = {
         "header": {"name": "Test User", "email": "test@example.com"},

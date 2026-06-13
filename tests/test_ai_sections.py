@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from ai import (
+from resume_tune.llm.ai import (
     EMPTY_AI_OUTPUT,
     ai_output_char_count,
     apply_skills_guardrails,
@@ -22,7 +22,7 @@ from ai import (
     skills_subject_to_char_budget,
     _call_with_retries,
 )
-from resume import trim_summary_one_step
+from resume_tune.render.resume import trim_summary_one_step
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -182,7 +182,7 @@ def test_apply_skills_guardrails_topup_tools_bucket() -> None:
 
 
 def test_trim_summary_one_step_skips_skills() -> None:
-    from resume import trim_summary_one_step
+    from resume_tune.render.resume import trim_summary_one_step
 
     ai_output = {
         "summary": "One sentence. Second sentence. Third sentence.",
@@ -198,7 +198,7 @@ def test_trim_summary_one_step_skips_skills() -> None:
 
 def test_generate_tailored_content_skips_llm_when_both_excluded() -> None:
     background_path = ROOT / "background.example.md"
-    with patch("ai.OpenAI") as mock_openai:
+    with patch("resume_tune.llm.ai.OpenAI") as mock_openai:
         ai_output, warnings, packer = generate_tailored_content(
             "",
             background_path,
@@ -239,8 +239,8 @@ def test_generate_tailored_content_skills_only_uses_skills_prompt() -> None:
         },
     )
     with (
-        patch("ai.OpenAI", return_value=mock_client),
-        patch("ai.apply_skills_guardrails", side_effect=passthrough_guard),
+        patch("resume_tune.llm.ai.OpenAI", return_value=mock_client),
+        patch("resume_tune.llm.ai.apply_skills_guardrails", side_effect=passthrough_guard),
     ):
         ai_output, _warnings, _packer = generate_tailored_content(
             "Backend role",
@@ -279,7 +279,7 @@ def test_generate_tailored_content_summary_only_uses_summary_prompt() -> None:
     mock_client = MagicMock()
     mock_client.chat.completions.create.return_value = mock_response
 
-    with patch("ai.OpenAI", return_value=mock_client):
+    with patch("resume_tune.llm.ai.OpenAI", return_value=mock_client):
         ai_output, _warnings, _packer = generate_tailored_content(
             "Backend role",
             background_path,
@@ -328,8 +328,8 @@ def test_revise_tailored_content_skills_only_preserves_summary() -> None:
         },
     )
     with (
-        patch("ai.OpenAI", return_value=mock_client),
-        patch("ai.apply_skills_guardrails", side_effect=passthrough_guard),
+        patch("resume_tune.llm.ai.OpenAI", return_value=mock_client),
+        patch("resume_tune.llm.ai.apply_skills_guardrails", side_effect=passthrough_guard),
     ):
         result, _warnings, _packer = revise_tailored_content(
             "Backend engineer role",

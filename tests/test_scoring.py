@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from scoring import (
+from resume_tune.content.scoring import (
     ContentRatings,
     SelectionPolicy,
     build_selection_from_scores,

@@ -3,12 +3,13 @@
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
-
-from ai import DEFAULT_AI_OUTPUT_MAX_CHARS, EMPTY_AI_OUTPUT, generate_tailored_content
-from resume import build_resume, load_background, resume_filename, save_resume_to_disk
-from settings import load_settings
+from resume_tune.llm.ai import (
+    DEFAULT_AI_OUTPUT_MAX_CHARS,
+    EMPTY_AI_OUTPUT,
+    generate_tailored_content,
+)
+from resume_tune.render.resume import build_resume, load_background, resume_filename, save_resume_to_disk
+from resume_tune.settings import ROOT, load_settings
 
 
 def main() -> None:

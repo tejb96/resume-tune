@@ -6,8 +6,8 @@ from dataclasses import dataclass
 from enum import IntEnum
 from typing import Any
 
-from selection import apply_content_selection
-from skills_map import buckets_for_skill, flatten_skills_map
+from resume_tune.llm.selection import apply_content_selection
+from resume_tune.skills.skills_map import buckets_for_skill, flatten_skills_map
 
 
 class SkillTier(IntEnum):
@@ -224,7 +224,7 @@ def build_packed_skill_lines(
     max_chars_per_line: int,
 ) -> tuple[list[dict[str, Any]], dict[str, SkillScore], list[str]]:
     """Build up to N unnamed lines filled sequentially by JD relevance."""
-    from ats import extract_jd_keywords
+    from resume_tune.ats.ats import extract_jd_keywords
 
     scores = score_skills_for_job(skills_map, job_description, evidence_text)
     jd_keywords = extract_jd_keywords(job_description) if job_description.strip() else []
@@ -326,7 +326,7 @@ def evidenced_skills_in_map(
     jd_keywords: list[str] | None = None,
 ) -> set[str]:
     """Map free-text evidence hits to canonical skills_map labels."""
-    from ats import extract_evidenced_skills
+    from resume_tune.ats.ats import extract_evidenced_skills
 
     if not evidence_text.strip():
         return set()
@@ -341,7 +341,7 @@ def evidenced_skills_in_map(
 
 
 def _skill_in_job_text(skill: str, job_description: str) -> bool:
-    from ats import _keyword_in_text
+    from resume_tune.ats.ats import _keyword_in_text
 
     if not job_description.strip():
         return False
@@ -360,7 +360,7 @@ def _jd_priority(skill: str, jd_keywords: list[str], job_description: str) -> in
 
 
 def _skill_matches_jd(skill: str, jd_keywords: list[str], job_description: str) -> bool:
-    from ats import _keyword_in_text
+    from resume_tune.ats.ats import _keyword_in_text
 
     if _skill_in_job_text(skill, job_description):
         return True
@@ -383,7 +383,7 @@ def score_skills_for_job(
     evidence_text: str,
 ) -> dict[str, SkillScore]:
     """Score every skills_map skill by job and resume relevance."""
-    from ats import extract_jd_keywords
+    from resume_tune.ats.ats import extract_jd_keywords
 
     jd_keywords = extract_jd_keywords(job_description) if job_description.strip() else []
     evidenced = evidenced_skills_in_map(skills_map, evidence_text, jd_keywords=jd_keywords)
@@ -531,7 +531,7 @@ def select_relevant_skill_categories(
     max_chars_per_line: int,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Rebuild skills into unnamed lines packed sequentially by JD relevance."""
-    from ai import skill_line_utilization
+    from resume_tune.llm.ai import skill_line_utilization
 
     llm_skills = [skill for cat in skill_categories for skill in cat["skills"]]
     packed, scores, jd_keywords = build_packed_skill_lines(

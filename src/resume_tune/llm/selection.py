@@ -8,8 +8,8 @@ from typing import Any
 
 from openai import APIConnectionError, APIStatusError, OpenAI
 
-from ai import AIResponseError, strip_json_fences
-from scoring import (
+from resume_tune.llm.ai import AIResponseError, strip_json_fences
+from resume_tune.content.scoring import (
     ContentRatings,
     SelectionPolicy,
     build_selection_from_scores,

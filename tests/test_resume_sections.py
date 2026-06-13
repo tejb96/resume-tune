@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from resume import (
+from resume_tune.render.resume import (
     DEFAULT_RESUME_SECTIONS,
     build_resume,
     docx_to_html,

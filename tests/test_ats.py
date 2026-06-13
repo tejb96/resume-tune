@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from ai import EMPTY_AI_OUTPUT
-from ats import (
+from resume_tune.llm.ai import EMPTY_AI_OUTPUT
+from resume_tune.ats.ats import (
     analyze_ats_compatibility,
     compare_pdf_fidelity,
     detect_sections,
@@ -16,7 +16,7 @@ from ats import (
     match_keywords,
     parse_contact_info,
 )
-from resume import build_resume_artifacts, flatten_resume_text, load_background
+from resume_tune.render.resume import build_resume_artifacts, flatten_resume_text, load_background
 
 ROOT = Path(__file__).resolve().parent.parent
 

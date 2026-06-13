@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from ai import (
+from resume_tune.llm.ai import (
     AIResponseError,
     filter_skill_categories,
     format_revision_user_message,
@@ -111,8 +111,8 @@ def test_revise_tailored_content_calls_model_and_returns_json() -> None:
         },
     )
     with (
-        patch("ai.OpenAI", return_value=mock_client),
-        patch("ai.apply_skills_guardrails", side_effect=passthrough_guard),
+        patch("resume_tune.llm.ai.OpenAI", return_value=mock_client),
+        patch("resume_tune.llm.ai.apply_skills_guardrails", side_effect=passthrough_guard),
     ):
         result, warnings, _packer = revise_tailored_content(
             "Backend engineer role",
@@ -189,8 +189,8 @@ def test_revise_tailored_content_retries_on_invalid_json() -> None:
         },
     )
     with (
-        patch("ai.OpenAI", return_value=mock_client),
-        patch("ai.apply_skills_guardrails", side_effect=passthrough_guard),
+        patch("resume_tune.llm.ai.OpenAI", return_value=mock_client),
+        patch("resume_tune.llm.ai.apply_skills_guardrails", side_effect=passthrough_guard),
     ):
         result, _warnings, _packer = revise_tailored_content(
             "Job description",
@@ -224,7 +224,7 @@ def test_revise_tailored_content_raises_after_invalid_json_exhausted() -> None:
     mock_client = MagicMock()
     mock_client.chat.completions.create.return_value = mock_response
 
-    with patch("ai.OpenAI", return_value=mock_client):
+    with patch("resume_tune.llm.ai.OpenAI", return_value=mock_client):
         with pytest.raises(AIResponseError):
             revise_tailored_content(
                 "Job description",
@@ -262,7 +262,7 @@ def test_call_with_retries_accepts_partial_dropped_skills_without_retry() -> Non
             "line_utilization": [],
         },
     )
-    with patch("ai.apply_skills_guardrails", side_effect=passthrough_guard):
+    with patch("resume_tune.llm.ai.apply_skills_guardrails", side_effect=passthrough_guard):
         parsed, dropped, _packer = _call_with_retries(
             mock_client,
             model_name="test-model",

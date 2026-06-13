@@ -1,16 +1,17 @@
 """Build a sample DOCX without calling the LLM."""
 
 import argparse
-import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
-
-from ai import EMPTY_AI_OUTPUT
-from resume import build_resume, build_resume_artifacts, load_background, static_preview_sections
-from selection import full_selection
-from settings import load_settings
+from resume_tune.llm.ai import EMPTY_AI_OUTPUT
+from resume_tune.render.resume import (
+    build_resume,
+    build_resume_artifacts,
+    load_background,
+    static_preview_sections,
+)
+from resume_tune.llm.selection import full_selection
+from resume_tune.settings import ROOT, load_settings
 
 DEFAULT_AI_OUTPUT = {
     "summary": (

@@ -7,8 +7,8 @@ from unittest.mock import patch
 
 import pytest
 
-from ai import enforce_skills_layout, skill_category_line_length
-from resume import build_resume, docx_to_html, fit_resume_to_page_budget, load_background
+from resume_tune.llm.ai import enforce_skills_layout, skill_category_line_length
+from resume_tune.render.resume import build_resume, docx_to_html, fit_resume_to_page_budget, load_background
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -100,8 +100,8 @@ def test_fit_resume_preserves_skills_while_trimming_static() -> None:
         call_count["n"] += 1
         return 2 if call_count["n"] == 1 else 1
 
-    with patch("resume.docx_to_pdf", return_value=b"%PDF-fake"):
-        with patch("resume.pdf_page_count", side_effect=fake_page_count):
+    with patch("resume_tune.render.resume.docx_to_pdf", return_value=b"%PDF-fake"):
+        with patch("resume_tune.render.resume.pdf_page_count", side_effect=fake_page_count):
             fitted_ai, fitted_selection, _docx, _pdf, page_count, diagnostics = (
                 fit_resume_to_page_budget(
                     heavy_background,
@@ -144,8 +144,8 @@ def test_fit_resume_trim_stalled_without_value_error() -> None:
         "education_indices": [],
     }
 
-    with patch("resume.docx_to_pdf", return_value=b"%PDF-fake"):
-        with patch("resume.pdf_page_count", return_value=2):
+    with patch("resume_tune.render.resume.docx_to_pdf", return_value=b"%PDF-fake"):
+        with patch("resume_tune.render.resume.pdf_page_count", return_value=2):
             fitted_ai, _sel, _docx, _pdf, page_count, diagnostics = fit_resume_to_page_budget(
                 heavy_background,
                 ai_output,

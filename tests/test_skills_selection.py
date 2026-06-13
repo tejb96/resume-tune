@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ai import apply_skills_guardrails
-from skills_selection import (
+from resume_tune.llm.ai import apply_skills_guardrails
+from resume_tune.skills.skills_selection import (
     SkillTier,
     build_packed_skill_lines,
     dedupe_redundant_skills,

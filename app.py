@@ -9,7 +9,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 import yaml
 
-from ai import (
+from resume_tune.llm.ai import (
     AIResponseError,
     DEFAULT_AI_OUTPUT_MAX_CHARS,
     EMPTY_AI_OUTPUT,
@@ -22,9 +22,9 @@ from ai import (
     read_background_text,
     revise_tailored_content,
 )
-from skills_map import load_skills_map
-from ats import analyze_ats_compatibility, extract_jd_keywords
-from resume import (
+from resume_tune.skills.skills_map import load_skills_map
+from resume_tune.ats.ats import analyze_ats_compatibility, extract_jd_keywords
+from resume_tune.render.resume import (
     build_resume_artifacts,
     libreoffice_available,
     load_background,
@@ -32,7 +32,7 @@ from resume import (
     save_resume_to_disk,
     static_preview_sections,
 )
-from selection import (
+from resume_tune.llm.selection import (
     DEFAULT_MIN_PROJECT_BULLETS,
     DEFAULT_MIN_PROJECT_ENTRIES,
     default_selection,
@@ -40,8 +40,8 @@ from selection import (
     generate_content_selection,
     static_content_stats,
 )
-from settings import ROOT, load_settings
-from tracker import log_application
+from resume_tune.settings import ROOT, load_settings
+from resume_tune.tracker.tracker import log_application
 
 
 @st.cache_data

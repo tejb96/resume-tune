@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ai import EMPTY_AI_OUTPUT
-from resume import (
+from resume_tune.llm.ai import EMPTY_AI_OUTPUT
+from resume_tune.render.resume import (
     build_resume_artifacts,
     docx_to_html,
     load_background,
     static_preview_sections,
 )
-from selection import full_selection
+from resume_tune.llm.selection import full_selection
 
 ROOT = Path(__file__).resolve().parent.parent
 

@@ -6,7 +6,7 @@ from pathlib import Path
 
 from openpyxl import load_workbook
 
-from tracker import HEADERS, ensure_tracker, log_application
+from resume_tune.tracker.tracker import HEADERS, ensure_tracker, log_application
 
 
 def test_ensure_tracker_creates_formatted_workbook(tmp_path: Path) -> None:

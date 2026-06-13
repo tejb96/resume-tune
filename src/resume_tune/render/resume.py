@@ -16,9 +16,8 @@ import mammoth
 from pypdf import PdfReader
 
 import frontmatter
-from ai import ai_output_char_count, normalize_ai_output
-from docx import Document
-from scoring import (
+from resume_tune.llm.ai import ai_output_char_count, normalize_ai_output
+from resume_tune.content.scoring import (
     DEFAULT_OVERFLOW_WARNING_MIN_COMPOSITE,
     SelectionPolicy,
     expand_selection_by_highest_score,
@@ -26,7 +25,7 @@ from scoring import (
     selection_with_all_items,
     trim_selection_by_lowest_score,
 )
-from selection import (
+from resume_tune.llm.selection import (
     DEFAULT_MIN_PROJECT_BULLETS,
     DEFAULT_MIN_PROJECT_ENTRIES,
     apply_content_selection,
@@ -35,6 +34,7 @@ from selection import (
     static_content_stats,
     trim_selection_one_step,
 )
+from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.opc.constants import RELATIONSHIP_TYPE as RT
 from docx.oxml.ns import qn
@@ -156,7 +156,7 @@ def validate_background(metadata: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("background.md: header.links must be a list")
 
     if "skills_map" in metadata:
-        from skills_map import validate_skills_map
+        from resume_tune.skills.skills_map import validate_skills_map
 
         metadata["skills_map"] = validate_skills_map(metadata["skills_map"])
 
