@@ -20,21 +20,23 @@ cp .env.example .env
 cp background.example.md background.md
 ```
 
-Edit `.env` with your API endpoint, key, and model. Edit `background.md` from [`background.example.md`](background.example.md) — see [docs/BACKGROUND.md](docs/BACKGROUND.md). `background.md` is gitignored.
+Edit `.env` with your API endpoint, key, and model in the **Settings** page (or copy from `.env.example`). Edit `background.md` on the **Resume data** page or from [`background.example.md`](background.example.md) — see [docs/BACKGROUND.md](docs/BACKGROUND.md). `background.md` is gitignored.
 
 ## Run
 
 ```bash
-uv run streamlit run app.py
+uv run streamlit run Tailor_Resume.py
 ```
 
 ## Workflow
+
+Use the sidebar to switch between **Tailor resume**, **Resume data**, and **Settings**.
 
 ### Background preview (no API)
 
 1. Click **Preview from background** in the sidebar.
 2. Static sections from `background.md` render without summary/skills.
-3. Edit `background.md` and preview again.
+3. Edit resume data on the **Resume data** page and preview again.
 
 ```bash
 uv run python scripts/smoke_test.py --background background.md --static-only
@@ -63,7 +65,7 @@ cp .env.example .env
 docker compose up --build
 ```
 
-App: http://localhost:8501. Create `background.md` locally before starting; it is bind-mounted. PDF export needs LibreOffice in the container.
+App: http://localhost:8501. Create `background.md` locally before starting (or use **Resume data** → **Create from example** in the app); it is bind-mounted read-write. PDF export needs LibreOffice in the container.
 
 ## Documentation
 
@@ -93,7 +95,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) and [docs/DEVELOPMENT.md](docs/DEVELOPMEN
 ## Project layout
 
 ```
-app.py                 Streamlit entry
+Tailor_Resume.py       Streamlit entry (Tailor resume)
+pages/                 Resume data and Settings pages
 config.toml            Settings
 background.example.md  Resume template
 src/resume_tune/       Python package (llm, render, skills, ats, …)

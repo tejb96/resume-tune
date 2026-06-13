@@ -13,7 +13,7 @@ uv sync --extra dev
 cp .env.example .env
 cp background.example.md background.md
 uv run pytest
-uv run streamlit run app.py
+uv run streamlit run Tailor_Resume.py
 ```
 
 ## Pull request expectations

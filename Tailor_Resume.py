@@ -40,21 +40,9 @@ from resume_tune.llm.selection import (
     generate_content_selection,
     static_content_stats,
 )
-from resume_tune.settings import ROOT, load_settings
+from resume_tune.settings import ROOT
 from resume_tune.tracker.tracker import log_application
-
-
-@st.cache_data
-def load_config() -> dict:
-    return load_settings()
-
-
-def model_options(config: dict) -> list[str]:
-    models_section = config.get("models", {})
-    ollama = models_section.get("ollama", [])
-    lemonade = models_section.get("lemonade", [])
-    combined = list(dict.fromkeys([*ollama, *lemonade, config.get("model_name", "")]))
-    return [m for m in combined if m]
+from resume_tune.ui.common import example_background_path, load_config, model_options, resolve_paths
 
 
 def rebuild_artifacts(
@@ -593,9 +581,7 @@ def render_save_section(result: dict, output_dir: Path, tracker_path: Path) -> N
 
 
 config = load_config()
-background_path = (ROOT / config.get("background_file", "./background.md")).resolve()
-output_dir = (ROOT / config.get("output_dir", "./output")).resolve()
-tracker_path = (ROOT / config.get("tracker_file", "./output/applications.xlsx")).resolve()
+background_path, output_dir, tracker_path = resolve_paths(config)
 endpoint_url = config.get("endpoint_url", "")
 api_key = config.get("api_key", "ollama")
 default_model = config.get("model_name", "")
@@ -625,27 +611,27 @@ if default_model and default_model not in models:
 elif not models and default_model:
     models = [default_model]
 
-st.set_page_config(page_title="Resume Tailor", layout="wide")
-st.title("Resume Tailor")
+st.set_page_config(page_title="Tailor resume", layout="wide")
+st.title("Tailor resume")
 st.caption(
     "Preview static sections from background.md to check formatting, or generate a "
     "job-tailored resume with AI summary and skills."
 )
 
-example_background_path = ROOT / "background.example.md"
+example_path = example_background_path()
 try:
     background_data = load_background(background_path)
     background_ok = True
 except (ValueError, FileNotFoundError, yaml.YAMLError) as exc:
     background_ok = False
     background_data = None
-    if isinstance(exc, FileNotFoundError) and example_background_path.exists():
+    if isinstance(exc, FileNotFoundError) and example_path.exists():
         st.error(
-            "Background file not found. Copy `background.example.md` to `background.md` "
-            "and add your resume data."
+            "Background file not found. Open **Resume data** in the sidebar to create it from "
+            "the example template, or copy `background.example.md` to `background.md`."
         )
     else:
-        st.error(f"Background file error: {exc}")
+        st.error(f"Background file error: {exc}. Open **Resume data** in the sidebar to fix it.")
 
 with st.sidebar:
     st.header("Inputs")
@@ -657,16 +643,26 @@ with st.sidebar:
             if needs_job_description
             else "Optional."
         ),
+        disabled=not background_ok,
     )
     model_index = models.index(default_model) if default_model in models else 0
-    selected_model = st.selectbox("Model", models, index=model_index)
-    st.text_input("API endpoint", value=endpoint_url or "(set OPENAI_BASE_URL in .env)", disabled=True)
-    preview = st.button("Preview from background", use_container_width=True)
-    generate = st.button("Generate tailored content", type="primary", use_container_width=True)
+    selected_model = st.selectbox("Model", models, index=model_index, disabled=not background_ok)
+    st.caption("LLM endpoint and other options: open **Settings** in the sidebar.")
+    preview = st.button(
+        "Preview from background",
+        use_container_width=True,
+        disabled=not background_ok,
+    )
+    generate = st.button(
+        "Generate tailored content",
+        type="primary",
+        use_container_width=True,
+        disabled=not background_ok,
+    )
 
     if (needs_ai or enable_job_aware_selection) and not endpoint_url:
         st.warning(
-            "Set OPENAI_BASE_URL in `.env` (or `endpoint_url` in config.toml) to use "
+            "Set the API endpoint in **Settings** (or `OPENAI_BASE_URL` in `.env`) to use "
             "**Generate tailored content**. Background preview works without an API."
         )
 
@@ -680,6 +676,10 @@ with st.sidebar:
         )
 
 if not background_ok:
+    st.info(
+        "Fix or create your resume data on the **Resume data** page, then return here to preview "
+        "or generate."
+    )
     st.stop()
 
 if "result" not in st.session_state:

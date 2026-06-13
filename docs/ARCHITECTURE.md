@@ -11,7 +11,7 @@ flowchart TD
     JD["Job description"]
 
     BG --> Load["render/resume.load_background()"]
-    CFG --> App["app.py"]
+    CFG --> App["Tailor_Resume.py"]
     JD --> Sel["llm/selection.generate_content_selection()"]
     Load --> Sel
     Sel --> Score["content/scoring.build_selection_from_scores()"]
@@ -36,11 +36,12 @@ flowchart TD
 
 ## Package layout
 
-Code lives under `src/resume_tune/`. The Streamlit entry point stays at repo root as [`app.py`](../app.py).
+Code lives under `src/resume_tune/`. The Streamlit entry point stays at repo root as [`Tailor_Resume.py`](../Tailor_Resume.py).
 
 | Path | Responsibility |
 |------|----------------|
-| [`app.py`](../app.py) | Streamlit UI, session state, wires everything |
+| [`Tailor_Resume.py`](../Tailor_Resume.py) | Streamlit UI (Tailor resume), session state, wires everything |
+| [`pages/`](../pages/) | Resume data and Settings multipage editors |
 | [`settings.py`](../src/resume_tune/settings.py) | Load `.env` + `config.toml`, validate sections |
 | [`llm/ai.py`](../src/resume_tune/llm/ai.py) | LLM calls, JSON parse/validate, summary/skills generation & revision |
 | [`llm/selection.py`](../src/resume_tune/llm/selection.py) | LLM content ratings (1–5), apply selection to background |
@@ -124,7 +125,7 @@ Legacy flat `"skills": [str, ...]` is migrated at render time. Skills must come 
 
 ### `build_resume_artifacts()` return value
 
-Central hub for export. Called from `app.py` after generation or revision:
+Central hub for export. Called from `Tailor_Resume.py` after generation or revision:
 
 ```python
 {

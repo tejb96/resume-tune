@@ -1,6 +1,7 @@
 .venv/
 .env
 background.md
+config.local.toml
 output/
 __pycache__/
 *.pyc

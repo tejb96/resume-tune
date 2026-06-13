@@ -133,7 +133,7 @@ uv run pytest tests/test_skills_selection.py tests/test_skills_map.py
 
 **File:** `[src/resume_tune/tracker/tracker.py](../src/resume_tune/tracker/tracker.py)`
 
-**Change:** Update `HEADERS` list and `log_application()` to write new fields. Update the form in `[app.py](../app.py)` to collect the data.
+**Change:** Update `HEADERS` list and `log_application()` to write new fields. Update the form in [`Tailor_Resume.py`](../Tailor_Resume.py) to collect the data.
 
 **Verify:**
 

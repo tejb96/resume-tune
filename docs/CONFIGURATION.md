@@ -5,10 +5,15 @@ Settings are loaded by [`src/resume_tune/settings.py`](../src/resume_tune/settin
 ## Precedence
 
 ```
-.env environment variables  →  config.toml  →  code defaults
+.env environment variables  →  config.local.toml  →  config.toml  →  code defaults
 ```
 
-Restart Streamlit after editing `config.toml` — settings are cached with `@st.cache_data`.
+Edit settings in the app (**Settings** page in the sidebar) or by hand:
+
+- **LLM credentials** — saved to `.env` (endpoint, API key, model, `AI_OUTPUT_MAX_CHARS`)
+- **Other options** — saved to `config.local.toml` (gitignored overlay over committed `config.toml`)
+
+The Settings page clears the Streamlit config cache on save so changes apply on the next rerun without restarting the app. Hand-editing `config.toml` still requires a Streamlit restart (or navigating away and back).
 
 ## Environment variables (`.env`)
 
@@ -100,4 +105,14 @@ ollama = ["llama3.2", "mistral", "qwen2.5"]
 lemonade = ["llama3.1:8b", "default"]
 ```
 
-Set the active model via `OPENAI_MODEL` in `.env`.
+Set the active model via `OPENAI_MODEL` in `.env` or the **Settings** page.
+
+## In-app editors
+
+| Page | What it edits |
+|------|----------------|
+| **Tailor resume** | Job description, preview, AI generation, export |
+| **Resume data** | `background.md` — structured resume sections, career narrative, or raw file |
+| **Settings** | `.env` LLM credentials and `config.local.toml` overrides |
+
+Saving `background.md` from the app writes a `.bak` backup beside the file.

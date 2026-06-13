@@ -19,7 +19,7 @@ Structured guide for using and hacking on Resume Tune. Follow this path to get p
 
 | I want to… | Read |
 |------------|------|
-| Edit my resume content | [BACKGROUND.md](BACKGROUND.md) |
+| Edit my resume content | **Resume data** page or [BACKGROUND.md](BACKGROUND.md) |
 | Change section order or page limits | [CONFIGURATION.md](CONFIGURATION.md) |
 | Understand how generation works | [ARCHITECTURE.md](ARCHITECTURE.md) |
 | Run tests or add a feature | [DEVELOPMENT.md](DEVELOPMENT.md) |

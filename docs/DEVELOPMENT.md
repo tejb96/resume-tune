@@ -19,7 +19,7 @@ Edit `.env` for your LLM endpoint. Edit `background.md` with test data (never co
 ## Run the app
 
 ```bash
-uv run streamlit run app.py
+uv run streamlit run Tailor_Resume.py
 ```
 
 Clear Streamlit cache after config changes: sidebar menu → **Clear cache**, or restart the process.
@@ -35,7 +35,8 @@ src/resume_tune/
 ├── render/              # DOCX/HTML/PDF + page fit (resume.py)
 ├── ats/                 # ATS checks
 └── tracker/             # Application spreadsheet
-app.py                   # Streamlit entry (repo root)
+Tailor_Resume.py         # Streamlit entry — Tailor resume (repo root)
+pages/                   # Resume data and Settings
 ```
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for data flow and key dict shapes.
@@ -50,7 +51,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for data flow and key dict shapes.
 | `uv run python scripts/ats_check.py --jd-file jd.txt` | No | ATS JSON report |
 | `uv run python scripts/e2e_live.py` | Yes | Full pipeline smoke (skips if API down) |
 
-Pytest `pythonpath` includes both `src` and `.` so tests can import `resume_tune` and root `app.py`.
+Pytest `pythonpath` includes both `src` and `.` so tests can import `resume_tune` and root `Tailor_Resume.py`.
 
 When mocking in tests, patch where the symbol is **used**:
 
@@ -95,7 +96,7 @@ Always run `uv sync` after changing `pyproject.toml`. Imports use `from resume_t
 docker compose up --build
 ```
 
-The image copies `src/`, `app.py`, and config assets. Mount `background.md` and `./output` via `docker-compose.yml`. PDF export requires LibreOffice in the container (not installed by default).
+The image copies `src/`, `pages/`, `Tailor_Resume.py`, and config assets. Mount `background.md` and `./output` via `docker-compose.yml`. PDF export requires LibreOffice in the container (not installed by default).
 
 ## Pull requests
 

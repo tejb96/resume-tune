@@ -100,12 +100,39 @@ def static_preview_sections(sections: list[str] | None) -> list[str]:
     return [s for s in resolve_resume_sections(sections) if s not in STATIC_PREVIEW_SECTIONS]
 
 
-def load_background(path: Path) -> dict[str, Any]:
-    """Load and validate YAML frontmatter from background.md."""
+def read_background_file(path: Path) -> tuple[dict[str, Any], str]:
+    """Load raw frontmatter metadata and markdown body from background.md."""
     if not path.exists():
         raise FileNotFoundError(f"Background file not found: {path}")
     post = frontmatter.load(path)
-    return validate_background(post.metadata)
+    metadata = post.metadata if isinstance(post.metadata, dict) else {}
+    body = post.content or ""
+    return metadata, body
+
+
+def load_background(path: Path) -> dict[str, Any]:
+    """Load and validate YAML frontmatter from background.md."""
+    metadata, _ = read_background_file(path)
+    return validate_background(metadata)
+
+
+def save_background(path: Path, metadata: dict[str, Any], body: str) -> None:
+    """Validate and write background.md, backing up the previous file if present."""
+    validated = validate_background(metadata)
+    post = frontmatter.Post(body, **validated)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        backup_path = path.with_name(path.name + ".bak")
+        shutil.copy2(path, backup_path)
+    path.write_text(frontmatter.dumps(post), encoding="utf-8")
+
+
+def bootstrap_background_from_example(target: Path, example: Path) -> None:
+    """Copy the example background file when no user file exists yet."""
+    if not example.is_file():
+        raise FileNotFoundError(f"Example background file not found: {example}")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(example, target)
 
 
 def validate_background(metadata: dict[str, Any]) -> dict[str, Any]:

@@ -9,6 +9,6 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
-      - ./background.md:/app/background.md:ro
+      - ./background.md:/app/background.md
       - ./output:/app/output
     restart: unless-stopped
