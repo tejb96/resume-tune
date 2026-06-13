@@ -41,6 +41,7 @@ from resume_tune.llm.selection import (
     static_content_stats,
 )
 from resume_tune.settings import ROOT
+from resume_tune.tracker.jd_parse import JobDescriptionMetadata, resolve_jd_metadata
 from resume_tune.tracker.paths import organize_application_files
 from resume_tune.tracker.tracker import log_application
 from resume_tune.ui.common import example_background_path, load_config, model_options, resolve_paths
@@ -352,6 +353,9 @@ def render_ats_section(
     sections: list[str],
     max_certifications: int | None,
     enable_ats_compat: bool,
+    endpoint_url: str = "",
+    model_name: str = "",
+    api_key: str = "ollama",
 ) -> None:
     """On-demand ATS check button and results panel."""
     if not enable_ats_compat:
@@ -363,7 +367,7 @@ def render_ats_section(
     run_disabled = not jd
     if st.button(
         "Run ATS check",
-        use_container_width=True,
+        width="stretch",
         disabled=run_disabled,
         help="Paste a job description above, then run a deterministic keyword and parse check.",
     ):
@@ -380,6 +384,13 @@ def render_ats_section(
             else:
                 result["ats"] = ats
                 result["job_description"] = jd
+                resolve_and_cache_jd_metadata(
+                    result,
+                    jd,
+                    endpoint_url=endpoint_url,
+                    model_name=model_name,
+                    api_key=api_key,
+                )
                 st.session_state.result = result
                 st.rerun()
 
@@ -470,8 +481,126 @@ def _ats_score_prefill(result: dict) -> str:
     return ""
 
 
+def _jd_metadata_cache_key(job_description: str) -> str:
+    return f"jd_metadata:{hash(job_description)}"
+
+
+def _metadata_to_dict(metadata: JobDescriptionMetadata) -> dict[str, str]:
+    return {
+        "company": metadata.company,
+        "role": metadata.role,
+        "location": metadata.location,
+        "job_url": metadata.job_url,
+    }
+
+
+def _metadata_from_dict(data: dict) -> JobDescriptionMetadata:
+    return JobDescriptionMetadata(
+        company=str(data.get("company") or "").strip(),
+        role=str(data.get("role") or "").strip(),
+        location=str(data.get("location") or "").strip(),
+        job_url=str(data.get("job_url") or "").strip(),
+    )
+
+
+def resolve_and_cache_jd_metadata(
+    result: dict,
+    job_description: str,
+    *,
+    endpoint_url: str,
+    model_name: str,
+    api_key: str,
+) -> JobDescriptionMetadata:
+    """Resolve JD metadata and store on ``result`` and session cache."""
+    jd = (job_description or "").strip()
+    if not jd:
+        return JobDescriptionMetadata()
+
+    cached = result.get("jd_metadata")
+    if cached and (result.get("job_description") or "").strip() == jd:
+        return _metadata_from_dict(cached)
+
+    cache_key = _jd_metadata_cache_key(jd)
+    if cache_key in st.session_state:
+        metadata = st.session_state[cache_key]
+        if isinstance(metadata, JobDescriptionMetadata):
+            result["jd_metadata"] = _metadata_to_dict(metadata)
+            return metadata
+
+    metadata = resolve_jd_metadata(
+        jd,
+        endpoint_url=endpoint_url,
+        model_name=model_name,
+        api_key=api_key,
+    )
+    st.session_state[cache_key] = metadata
+    result["jd_metadata"] = _metadata_to_dict(metadata)
+    return metadata
+
+
+def _jd_metadata_prefill(
+    result: dict,
+    *,
+    endpoint_url: str,
+    model_name: str,
+    api_key: str,
+    show_spinner: bool = False,
+) -> JobDescriptionMetadata:
+    jd = (result.get("job_description") or "").strip()
+    if not jd:
+        return JobDescriptionMetadata()
+
+    cached = result.get("jd_metadata")
+    if cached:
+        return _metadata_from_dict(cached)
+
+    cache_key = _jd_metadata_cache_key(jd)
+    if cache_key in st.session_state:
+        metadata = st.session_state[cache_key]
+        if isinstance(metadata, JobDescriptionMetadata):
+            result["jd_metadata"] = _metadata_to_dict(metadata)
+            return metadata
+
+    def resolve() -> JobDescriptionMetadata:
+        return resolve_jd_metadata(
+            jd,
+            endpoint_url=endpoint_url,
+            model_name=model_name,
+            api_key=api_key,
+        )
+
+    if show_spinner:
+        with st.spinner("Detecting company and role from job description..."):
+            metadata = resolve()
+    else:
+        metadata = resolve()
+
+    st.session_state[cache_key] = metadata
+    result["jd_metadata"] = _metadata_to_dict(metadata)
+    return metadata
+
+
+def _init_application_log_fields(
+    log_key: str, metadata: JobDescriptionMetadata
+) -> None:
+    init_marker = f"app_log_initialized_{log_key}"
+    if init_marker in st.session_state:
+        return
+    st.session_state[f"app_log_company_{log_key}"] = metadata.company
+    st.session_state[f"app_log_role_{log_key}"] = metadata.role
+    st.session_state[f"app_log_location_{log_key}"] = metadata.location
+    st.session_state[f"app_log_job_url_{log_key}"] = metadata.job_url
+    st.session_state[init_marker] = True
+
+
 def render_application_log_prompt(
-    result: dict, applications_dir: Path, tracker_path: Path
+    result: dict,
+    applications_dir: Path,
+    tracker_path: Path,
+    *,
+    endpoint_url: str = "",
+    model_name: str = "",
+    api_key: str = "ollama",
 ) -> None:
     pending = st.session_state.get("pending_application_log")
     if not pending:
@@ -485,15 +614,23 @@ def render_application_log_prompt(
     ats_score = _ats_score_prefill(result)
     resume_path = pending["resume_path"]
     job_description = (result.get("job_description") or "").strip()
+    metadata = _jd_metadata_prefill(
+        result,
+        endpoint_url=endpoint_url,
+        model_name=model_name,
+        api_key=api_key,
+        show_spinner=bool(job_description),
+    )
+    _init_application_log_fields(log_key, metadata)
 
     with st.expander("Log this application", expanded=True):
         with st.form("application_log_form"):
             date_applied = st.date_input("Date Applied", value=date.today())
-            company = st.text_input("Company")
-            role = st.text_input("Role / Job Title")
-            location = st.text_input("Location")
+            company = st.text_input("Company", key=f"app_log_company_{log_key}")
+            role = st.text_input("Role / Job Title", key=f"app_log_role_{log_key}")
+            location = st.text_input("Location", key=f"app_log_location_{log_key}")
             status = st.text_input("Status", value="Applied")
-            job_url = st.text_input("Job URL")
+            job_url = st.text_input("Job URL", key=f"app_log_job_url_{log_key}")
             st.text_input("ATS Score at Apply", value=ats_score, disabled=True)
             set_follow_up = st.checkbox("Set follow-up date")
             follow_up_date = st.date_input(
@@ -509,6 +646,10 @@ def render_application_log_prompt(
             )
             if not job_description:
                 st.caption("No job description in this session — JD snapshot will be left empty.")
+            elif metadata.any_field():
+                st.caption(
+                    "Some fields were filled from the job description — edit before logging."
+                )
             notes = st.text_area("Notes")
 
             if st.form_submit_button("Log application"):
@@ -550,7 +691,15 @@ def render_application_log_prompt(
                     st.error(f"Could not log application: {exc}")
 
 
-def render_save_section(result: dict, applications_dir: Path, tracker_path: Path) -> None:
+def render_save_section(
+    result: dict,
+    applications_dir: Path,
+    tracker_path: Path,
+    *,
+    endpoint_url: str = "",
+    model_name: str = "",
+    api_key: str = "ollama",
+) -> None:
     st.subheader("Save")
     save_col_docx, save_col_pdf = st.columns(2)
 
@@ -561,7 +710,7 @@ def render_save_section(result: dict, applications_dir: Path, tracker_path: Path
 
     with save_col_docx:
         if docx_bytes:
-            if st.button("Save DOCX to disk", key="save_docx_disk", use_container_width=True):
+            if st.button("Save DOCX to disk", key="save_docx_disk", width="stretch"):
                 try:
                     saved_path = save_resume_to_disk(docx_bytes, applications_dir, filename_docx)
                     result["saved_paths"]["docx"] = str(saved_path)
@@ -580,7 +729,7 @@ def render_save_section(result: dict, applications_dir: Path, tracker_path: Path
                 file_name=filename_docx,
                 mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 type="primary",
-                use_container_width=True,
+                width="stretch",
             )
             saved_docx = result.get("saved_paths", {}).get("docx")
             if saved_docx:
@@ -588,7 +737,7 @@ def render_save_section(result: dict, applications_dir: Path, tracker_path: Path
 
     with save_col_pdf:
         if pdf_bytes:
-            if st.button("Save PDF to disk", key="save_pdf_disk", use_container_width=True):
+            if st.button("Save PDF to disk", key="save_pdf_disk", width="stretch"):
                 try:
                     saved_path = save_resume_to_disk(pdf_bytes, applications_dir, filename_pdf)
                     result["saved_paths"]["pdf"] = str(saved_path)
@@ -607,7 +756,7 @@ def render_save_section(result: dict, applications_dir: Path, tracker_path: Path
                 file_name=filename_pdf,
                 mime="application/pdf",
                 type="primary",
-                use_container_width=True,
+                width="stretch",
             )
             saved_pdf = result.get("saved_paths", {}).get("pdf")
             if saved_pdf:
@@ -616,14 +765,21 @@ def render_save_section(result: dict, applications_dir: Path, tracker_path: Path
             st.button(
                 "Download PDF",
                 disabled=True,
-                use_container_width=True,
+                width="stretch",
                 help="Install LibreOffice for PDF export",
             )
             st.caption(
                 "PDF export requires LibreOffice (`sudo apt install libreoffice-writer`)."
             )
 
-    render_application_log_prompt(result, applications_dir, tracker_path)
+    render_application_log_prompt(
+        result,
+        applications_dir,
+        tracker_path,
+        endpoint_url=endpoint_url,
+        model_name=model_name,
+        api_key=api_key,
+    )
 
 
 config = load_config()
@@ -696,13 +852,13 @@ with st.sidebar:
     st.caption("LLM endpoint and other options: open **Settings** in the sidebar.")
     preview = st.button(
         "Preview from background",
-        use_container_width=True,
+        width="stretch",
         disabled=not background_ok,
     )
     generate = st.button(
         "Generate tailored content",
         type="primary",
-        use_container_width=True,
+        width="stretch",
         disabled=not background_ok,
     )
 
@@ -816,6 +972,14 @@ if generate:
                     **artifact_build_kwargs(),
                 )
                 result["job_description"] = job_description.strip()
+                if result["job_description"]:
+                    resolve_and_cache_jd_metadata(
+                        result,
+                        result["job_description"],
+                        endpoint_url=endpoint_url,
+                        model_name=selected_model,
+                        api_key=api_key,
+                    )
                 result["revision_history"] = []
                 result["preview_mode"] = False
                 result.pop("sections", None)
@@ -1035,7 +1199,14 @@ else:
         else:
             st.caption("No AI sections configured. Edit background.md or config.toml to enable revision.")
 
-        render_save_section(result, applications_dir, tracker_path)
+        render_save_section(
+            result,
+            applications_dir,
+            tracker_path,
+            endpoint_url=endpoint_url,
+            model_name=selected_model,
+            api_key=api_key,
+        )
         preview_sections = result.get("sections") or resume_sections
         preview_include_summary = "summary" in preview_sections
         preview_include_skills = "skills" in preview_sections
@@ -1056,6 +1227,9 @@ else:
             sections=preview_sections,
             max_certifications=max_certifications,
             enable_ats_compat=enable_ats_compat,
+            endpoint_url=endpoint_url,
+            model_name=selected_model,
+            api_key=api_key,
         )
 
     with right_col:

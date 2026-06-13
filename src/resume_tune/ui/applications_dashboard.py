@@ -8,6 +8,7 @@ from typing import Any
 
 import streamlit as st
 
+from resume_tune.tracker.paths import JD_SNAPSHOT_FILENAME, RESUME_BASENAME, resolve_stored_path
 from resume_tune.tracker.tracker import HEADERS, load_applications, save_applications
 
 TERMINAL_STATUSES = frozenset(
@@ -213,6 +214,75 @@ def _normalize_edited_rows(
     return [_serialize_tracker_row(row, applications_dir) for row in edited_rows]
 
 
+def _row_label(row: dict[str, Any], position: int) -> str:
+    company = str(row.get("Company") or "Unknown company").strip()
+    role = str(row.get("Role / Job Title") or "Unknown role").strip()
+    applied = _parse_iso_date(row.get("Date Applied"))
+    applied_text = applied.isoformat() if applied else ""
+    suffix = f" ({applied_text})" if applied_text else ""
+    return f"{position + 1}. {company} — {role}{suffix}"
+
+
+def _render_application_preview(row: dict[str, Any], applications_dir: Path) -> None:
+    job_url = str(row.get("Job URL") or "").strip()
+    if job_url:
+        st.link_button("Open job URL", job_url)
+
+    resume_tab, jd_tab = st.tabs(["Resume", "Job description"])
+
+    with resume_tab:
+        resume_path = resolve_stored_path(row.get("Resume File"), applications_dir)
+        if not str(resume_path):
+            st.info("No resume file recorded.")
+        elif resume_path.is_file():
+            resume_bytes = resume_path.read_bytes()
+            mime = (
+                "application/pdf"
+                if resume_path.suffix.lower() == ".pdf"
+                else "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            )
+            st.download_button(
+                "Download resume",
+                data=resume_bytes,
+                file_name=resume_path.name,
+                mime=mime,
+                width="stretch",
+            )
+            pdf_preview_path = (
+                resume_path
+                if resume_path.suffix.lower() == ".pdf"
+                else resume_path.parent / f"{RESUME_BASENAME}.pdf"
+            )
+            if pdf_preview_path.is_file():
+                st.pdf(pdf_preview_path.read_bytes(), height=600)
+            elif resume_path.suffix.lower() != ".pdf":
+                st.caption("Inline preview requires PDF; download DOCX above.")
+        else:
+            st.warning("Resume file is missing on disk.")
+
+    with jd_tab:
+        jd_path = resolve_stored_path(row.get("JD Snapshot"), applications_dir)
+        if not jd_path.is_file():
+            resume_path = resolve_stored_path(row.get("Resume File"), applications_dir)
+            if resume_path.parent.is_dir():
+                fallback = resume_path.parent / JD_SNAPSHOT_FILENAME
+                if fallback.is_file():
+                    jd_path = fallback
+
+        if jd_path.is_file():
+            jd_text = jd_path.read_text(encoding="utf-8")
+            st.download_button(
+                "Download job description",
+                data=jd_text,
+                file_name=jd_path.name,
+                mime="text/plain",
+                width="stretch",
+            )
+            st.text_area("Job description", value=jd_text, height=320, disabled=True)
+        else:
+            st.info("No job description saved for this application.")
+
+
 def render_applications_dashboard(applications_dir: Path, tracker_path: Path) -> None:
     st.title("Applications")
     st.caption(f"Folder: `{applications_dir}` · Tracker: `{tracker_path.name}`")
@@ -272,7 +342,7 @@ def render_applications_dashboard(applications_dir: Path, tracker_path: Path) ->
     edited = st.data_editor(
         display_rows,
         column_config=_column_config(),
-        use_container_width=True,
+        width="stretch",
         num_rows="fixed",
         hide_index=True,
         key="applications_data_editor",
@@ -289,3 +359,10 @@ def render_applications_dashboard(applications_dir: Path, tracker_path: Path) ->
             st.rerun()
         except OSError as exc:
             st.error(f"Could not save applications: {exc}")
+
+    edited_rows = _editor_rows(edited)
+    st.divider()
+    option_labels = [_row_label(row, position) for position, row in enumerate(edited_rows)]
+    selected_label = st.selectbox("Application", options=option_labels)
+    selected_position = option_labels.index(selected_label)
+    _render_application_preview(edited_rows[selected_position], applications_dir)

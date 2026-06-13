@@ -352,7 +352,7 @@ def render_background_page(background_path) -> None:
     ensure_draft_loaded(background_path)
 
     action_col1, action_col2 = st.columns(2)
-    if action_col2.button("Discard changes", use_container_width=True):
+    if action_col2.button("Discard changes", width="stretch"):
         discard_draft(background_path)
         st.info("Reloaded from disk.")
         st.rerun()
@@ -392,7 +392,7 @@ def render_background_page(background_path) -> None:
             except (ValueError, yaml.YAMLError) as exc:
                 st.error(str(exc))
 
-    if action_col1.button("Save", type="primary", use_container_width=True):
+    if action_col1.button("Save", type="primary", width="stretch"):
         try:
             save_structured(background_path, st.session_state.get("bg_body", ""))
             discard_draft(background_path)

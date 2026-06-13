@@ -9,6 +9,7 @@ from resume_tune.tracker.paths import (
     application_folder_basename,
     organize_application_files,
     resolve_application_dir,
+    resolve_stored_path,
 )
 
 
@@ -49,3 +50,15 @@ def test_organize_application_files_moves_resume_and_writes_jd(tmp_path: Path) -
     assert dest_resume.read_bytes() == b"docx-bytes"
     assert dest_jd.read_text(encoding="utf-8") == jd
     assert not resume.exists()
+
+
+def test_resolve_stored_path_supports_relative_and_absolute(tmp_path: Path) -> None:
+    root = tmp_path / "Applications"
+    folder = root / "2026-06-12_Acme_Engineer"
+    folder.mkdir(parents=True)
+    resume = folder / "resume.pdf"
+    resume.write_bytes(b"pdf")
+
+    assert resolve_stored_path("2026-06-12_Acme_Engineer/resume.pdf", root) == resume.resolve()
+    assert resolve_stored_path(str(resume), root) == resume.resolve()
+    assert resolve_stored_path("", root) == Path()

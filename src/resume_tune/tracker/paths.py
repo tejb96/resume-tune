@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import shutil
 from pathlib import Path
+from typing import Any
 
 JD_SNAPSHOT_FILENAME = "job_description.txt"
 RESUME_BASENAME = "resume"
@@ -72,3 +73,14 @@ def organize_application_files(
         jd_path.write_text(jd, encoding="utf-8")
 
     return dest_resume, jd_path
+
+
+def resolve_stored_path(path_value: Any, applications_dir: Path) -> Path:
+    """Resolve a tracker path that may be relative to ``applications_dir`` or absolute."""
+    text = str(path_value or "").strip()
+    if not text:
+        return Path()
+    path = Path(text).expanduser()
+    if not path.is_absolute():
+        path = applications_dir / path
+    return path.resolve()
